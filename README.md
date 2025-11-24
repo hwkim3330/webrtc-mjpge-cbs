@@ -1,4 +1,5 @@
 # MJPEG Stream + CBS Control
+<img width="1905" height="1005" alt="image" src="https://github.com/user-attachments/assets/cd93f9e6-3acc-4498-a0ac-69320e08b7f6" />
 
 Real-time MJPEG webcam streaming server with integrated CBS (Credit Based Shaper) control for Microchip LAN969x TSN switches.
 
