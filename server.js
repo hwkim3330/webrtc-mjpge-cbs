@@ -97,22 +97,15 @@ app.get('/stream.mjpg', (req, res) => {
   });
 });
 
-// 프레임 수신 (송출자 → 서버)
+// 프레임 수신 (송출자 → 서버) - HTTP fallback
 let lastFrameTime = 0;
 let frameCount = 0;
 let serverStats = { fps: 0, latency: 0, frameSize: 0, lastCountTime: Date.now() };
 
-app.post('/frame', (req, res) => {
-  const { frame, timestamp } = req.body;
+// 프레임 브로드캐스트 함수 (공통)
+function broadcastFrame(frameBuffer, timestamp) {
   const serverReceiveTime = Date.now();
-
-  if (!frame) {
-    return res.status(400).send('No frame');
-  }
-
-  // base64 → Buffer
-  const base64Data = frame.replace(/^data:image\/jpeg;base64,/, '');
-  latestFrame = Buffer.from(base64Data, 'base64');
+  latestFrame = frameBuffer;
 
   // 레이턴시 계산 (송출자 → 서버)
   if (timestamp) {
@@ -137,22 +130,51 @@ app.post('/frame', (req, res) => {
     fps: serverStats.fps
   });
 
-  // 모든 시청자에게 프레임 전송
+  // 모든 시청자에게 프레임 전송 (MJPEG) - 비블로킹!
   const boundary = '--frame\r\n';
   const header = 'Content-Type: image/jpeg\r\n\r\n';
   const footer = '\r\n';
+  const frameData = Buffer.concat([
+    Buffer.from(boundary + header),
+    latestFrame,
+    Buffer.from(footer)
+  ]);
 
   viewers.forEach(viewer => {
+    // 각 뷰어 독립적으로 처리 - 느린 뷰어는 스킵
     try {
-      viewer.res.write(boundary);
-      viewer.res.write(header);
-      viewer.res.write(latestFrame);
-      viewer.res.write(footer);
+      // writableNeedDrain이 true면 버퍼 꽉 참 - 스킵
+      if (viewer.res.writableNeedDrain) {
+        viewer.droppedFrames = (viewer.droppedFrames || 0) + 1;
+        return;  // 이 뷰어 스킵, 다음 뷰어로
+      }
+
+      // 비동기 write (콜백 무시 - fire and forget)
+      viewer.res.write(frameData, (err) => {
+        if (err) {
+          // 에러시 뷰어 제거
+          viewers = viewers.filter(v => v.id !== viewer.id);
+        }
+      });
     } catch (e) {
-      // 연결 끊긴 시청자 무시
+      // 연결 끊긴 시청자 제거
+      viewers = viewers.filter(v => v.id !== viewer.id);
     }
   });
+}
 
+app.post('/frame', (req, res) => {
+  const { frame, timestamp } = req.body;
+
+  if (!frame) {
+    return res.status(400).send('No frame');
+  }
+
+  // base64 → Buffer
+  const base64Data = frame.replace(/^data:image\/jpeg;base64,/, '');
+  const frameBuffer = Buffer.from(base64Data, 'base64');
+
+  broadcastFrame(frameBuffer, timestamp);
   res.sendStatus(200);
 });
 
@@ -171,6 +193,15 @@ io.on('connection', (socket) => {
 
   socket.on('viewer', () => {
     socket.emit('broadcaster-status', broadcasterSocket !== null);
+  });
+
+  // Socket.IO 바이너리 프레임 수신 (저지연)
+  socket.on('frame', (data) => {
+    if (socket.id !== broadcasterSocket) return;
+
+    // ArrayBuffer → Buffer
+    const frameBuffer = Buffer.from(data.frame);
+    broadcastFrame(frameBuffer, data.timestamp);
   });
 
   socket.on('stats', (data) => {

@@ -260,23 +260,33 @@
         <button id="startBtn" class="start-btn">Start</button>
         <button id="stopBtn" class="stop-btn" disabled>Stop</button>
         <div class="settings">
+          <label>Preset</label>
+          <select id="presetSelect" onchange="applyStreamPreset()">
+            <option value="lowlatency" selected>Low Latency (추천)</option>
+            <option value="balanced">Balanced</option>
+            <option value="quality">High Quality</option>
+            <option value="oldmac">Old Mac/저사양</option>
+          </select>
           <label>Res</label>
           <select id="resolutionSelect">
             <option value="1920x1080">1080p</option>
-            <option value="1280x720" selected>720p</option>
-            <option value="640x480">480p</option>
+            <option value="1280x720">720p</option>
+            <option value="640x480" selected>480p</option>
+            <option value="320x240">240p</option>
           </select>
           <label>FPS</label>
           <select id="fpsSelect">
             <option value="60">60</option>
-            <option value="30" selected>30</option>
-            <option value="15">15</option>
+            <option value="30">30</option>
+            <option value="15" selected>15</option>
+            <option value="10">10</option>
           </select>
           <label>Q</label>
           <select id="qualitySelect">
             <option value="0.9">Hi</option>
-            <option value="0.7" selected>Mid</option>
-            <option value="0.5">Lo</option>
+            <option value="0.7">Mid</option>
+            <option value="0.5" selected>Lo</option>
+            <option value="0.3">VLo</option>
           </select>
         </div>
       </div>
@@ -307,6 +317,7 @@
       <div style="margin-top:12px;">
         <div class="stat-row"><span class="stat-label">Resolution</span><span class="stat-value" id="resolution">-</span></div>
         <div class="stat-row"><span class="stat-label">Frames Sent</span><span class="stat-value" id="framesSent">-</span></div>
+        <div class="stat-row"><span class="stat-label">Frames Dropped</span><span class="stat-value" id="framesDropped" style="color:#ff9500">0</span></div>
         <div class="stat-row"><span class="stat-label">Total Sent</span><span class="stat-value" id="bytesSent">-</span></div>
       </div>
       <div class="viewers-box">
@@ -446,32 +457,61 @@
       }
     };
 
+    let lastFrameSendTime = 0;
+    let isSending = false;  // 프레임 큐 방지용 플래그
+    let droppedFrames = 0;  // 드롭된 프레임 수
+
     function startStreaming() {
       streaming = true;
       const fps = parseInt(document.getElementById('fpsSelect').value);
       const quality = parseFloat(document.getElementById('qualitySelect').value);
-      frameInterval = setInterval(() => streaming && sendFrame(quality), 1000 / fps);
+      const frameIntervalMs = 1000 / fps;
+
+      // 단순 setInterval 사용 (더 안정적)
+      frameInterval = setInterval(() => {
+        if (streaming) sendFrame(quality);
+      }, frameIntervalMs);
+
       setInterval(updateStats, 1000);
     }
 
-    async function sendFrame(quality) {
+    // 프레임 드롭 방식 - 이전 전송 완료 전 새 프레임 무시
+    function sendFrame(quality) {
+      // 이전 프레임 전송 중이면 스킵 (큐 누적 방지!)
+      if (isSending) {
+        droppedFrames++;
+        return;
+      }
+
+      isSending = true;
       const sendTime = Date.now();
+
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const frame = canvas.toDataURL('image/jpeg', quality);
-      const frameBytes = frame.length * 0.75;
-      try {
-        const res = await fetch('/frame', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ frame, timestamp: sendTime })
-        });
-        if (res.ok) {
-          stats.framesSent++;
-          stats.bytesSent += frameBytes;
-          stats.lastFrameSize = frameBytes;
-          stats.lastLatency = Date.now() - sendTime;
+
+      // toBlob 비동기 처리
+      canvas.toBlob((blob) => {
+        if (!blob || !streaming) {
+          isSending = false;
+          return;
         }
-      } catch (e) {}
+
+        blob.arrayBuffer().then((buffer) => {
+          // volatile.emit: 버퍼 꽉 차면 드롭 (Socket.IO)
+          socket.volatile.emit('frame', {
+            frame: buffer,
+            timestamp: sendTime
+          });
+
+          stats.framesSent++;
+          stats.bytesSent += blob.size;
+          stats.lastFrameSize = blob.size;
+          stats.lastLatency = Date.now() - sendTime;
+
+          isSending = false;  // 다음 프레임 전송 허용
+        }).catch(() => {
+          isSending = false;
+        });
+      }, 'image/jpeg', quality);
     }
 
     function updateStats() {
@@ -498,6 +538,7 @@
       stats.lastFrames = stats.framesSent;
 
       document.getElementById('framesSent').textContent = stats.framesSent.toLocaleString();
+      document.getElementById('framesDropped').textContent = droppedFrames.toLocaleString();
       document.getElementById('bytesSent').textContent = formatBytes(stats.bytesSent);
 
       fetch('/api/status').then(r => r.json()).then(d => {
@@ -517,6 +558,23 @@
       if (b >= 1048576) return (b / 1048576).toFixed(2) + ' MB';
       if (b >= 1024) return (b / 1024).toFixed(2) + ' KB';
       return b + ' B';
+    }
+
+    // ========== STREAM PRESETS ==========
+    function applyStreamPreset() {
+      const preset = document.getElementById('presetSelect').value;
+      const presets = {
+        lowlatency: { res: '640x480', fps: '15', quality: '0.5' },
+        balanced: { res: '1280x720', fps: '30', quality: '0.7' },
+        quality: { res: '1920x1080', fps: '30', quality: '0.9' },
+        oldmac: { res: '320x240', fps: '10', quality: '0.3' }
+      };
+      const p = presets[preset];
+      if (p) {
+        document.getElementById('resolutionSelect').value = p.res;
+        document.getElementById('fpsSelect').value = p.fps;
+        document.getElementById('qualitySelect').value = p.quality;
+      }
     }
 
     // ========== CBS CONTROL ==========
