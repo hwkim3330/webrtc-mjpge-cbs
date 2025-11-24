@@ -258,16 +258,37 @@
       }
     });
 
+    let lastFrameTime = Date.now();
+    let reconnectTimer = null;
+
     streamImg.onload = () => {
       noStreamEl.style.display = 'none';
       streamImg.style.display = 'block';
       statusEl.textContent = 'Connected';
       statusEl.className = 'status connected';
+      lastFrameTime = Date.now();
     };
 
     streamImg.onerror = () => {
+      console.log('Stream error, reconnecting...');
       setTimeout(() => { streamImg.src = '/stream.mjpg?' + Date.now(); }, 1000);
     };
+
+    // 프레임 수신 시 타임스탬프 갱신
+    socket.on('frame-stats', () => {
+      lastFrameTime = Date.now();
+    });
+
+    // 5초 동안 프레임 없으면 자동 재연결
+    setInterval(() => {
+      const elapsed = Date.now() - lastFrameTime;
+      if (elapsed > 5000 && streamImg.style.display === 'block') {
+        console.log('No frames for 5s, reconnecting...');
+        statusEl.textContent = 'Reconnecting...';
+        statusEl.className = 'status waiting';
+        streamImg.src = '/stream.mjpg?' + Date.now();
+      }
+    }, 2000);
 
     let totalFrames = 0;
     let totalBytes = 0;
