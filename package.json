@@ -1,0 +1,25 @@
+{
+  "name": "mjpeg-stream-cbs",
+  "version": "1.0.0",
+  "description": "MJPEG Webcam Streaming with CBS (Credit Based Shaper) Control for Microchip LAN969x TSN Switch",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "mjpeg",
+    "streaming",
+    "webcam",
+    "cbs",
+    "tsn",
+    "microchip",
+    "lan969x",
+    "qos"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  }
+}

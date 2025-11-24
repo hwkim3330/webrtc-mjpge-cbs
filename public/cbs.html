@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CBS Control - Credit Based Shaper</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+      background: #f5f5f7;
+      min-height: 100vh;
+      color: #1d1d1f;
+      padding: 20px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      max-width: 1200px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    h1 { font-size: 1.5rem; font-weight: 600; }
+    .back-btn {
+      padding: 8px 16px;
+      background: #fff;
+      color: #0071e3;
+      text-decoration: none;
+      border-radius: 980px;
+      font-size: 0.85rem;
+      border: 1px solid #d2d2d7;
+    }
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    @media (max-width: 900px) {
+      .main-grid { grid-template-columns: 1fr; }
+    }
+    .panel {
+      background: #fff;
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    }
+    .panel h2 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #1d1d1f;
+    }
+    .status-bar {
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 0.85rem;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status-bar.connected { background: rgba(52,199,89,0.1); color: #34c759; }
+    .status-bar.disconnected { background: rgba(255,59,48,0.1); color: #ff3b30; }
+    .status-bar.loading { background: rgba(0,113,227,0.1); color: #0071e3; }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .device-info {
+      font-size: 0.8rem;
+      color: #86868b;
+      margin-bottom: 16px;
+      padding: 10px;
+      background: #f5f5f7;
+      border-radius: 8px;
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-group label {
+      display: block;
+      font-size: 0.8rem;
+      color: #86868b;
+      margin-bottom: 6px;
+    }
+    .form-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    select, input[type="number"] {
+      padding: 10px 14px;
+      font-size: 0.9rem;
+      border: 1px solid #d2d2d7;
+      border-radius: 10px;
+      background: #fff;
+      font-family: inherit;
+      flex: 1;
+    }
+    select:focus, input:focus {
+      outline: none;
+      border-color: #0071e3;
+    }
+    .port-checkboxes {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+    .port-check {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      background: #f5f5f7;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+      border: 2px solid transparent;
+    }
+    .port-check:hover {
+      background: #e8e8ed;
+    }
+    .port-check.selected {
+      background: rgba(0,113,227,0.1);
+      border-color: #0071e3;
+      color: #0071e3;
+    }
+    .port-check input {
+      display: none;
+    }
+    .port-check span {
+      font-weight: 600;
+      font-size: 0.9rem;
+    }
+    button {
+      padding: 12px 24px;
+      font-size: 0.9rem;
+      border: none;
+      border-radius: 980px;
+      cursor: pointer;
+      font-weight: 500;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+    .apply-btn {
+      background: #0071e3;
+      color: white;
+      width: 100%;
+    }
+    .apply-btn:hover {
+      background: #0077ed;
+    }
+    .apply-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .clear-btn {
+      background: #ff3b30;
+      color: white;
+      width: 100%;
+      margin-top: 10px;
+    }
+    .clear-btn:hover {
+      background: #ff453a;
+    }
+    .config-list {
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .config-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px;
+      background: #f5f5f7;
+      border-radius: 10px;
+      margin-bottom: 8px;
+    }
+    .config-item:last-child {
+      margin-bottom: 0;
+    }
+    .config-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .config-port {
+      font-weight: 600;
+      color: #1d1d1f;
+    }
+    .config-details {
+      font-size: 0.75rem;
+      color: #86868b;
+    }
+    .config-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .delete-btn {
+      padding: 6px 12px;
+      background: rgba(255,59,48,0.1);
+      color: #ff3b30;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+    .delete-btn:hover {
+      background: rgba(255,59,48,0.2);
+    }
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: #86868b;
+    }
+    .empty-state svg {
+      width: 48px;
+      height: 48px;
+      margin-bottom: 12px;
+      opacity: 0.4;
+    }
+    .refresh-btn {
+      padding: 8px 16px;
+      background: #f5f5f7;
+      color: #1d1d1f;
+      border: 1px solid #d2d2d7;
+      margin-left: auto;
+    }
+    .refresh-btn:hover {
+      background: #e8e8ed;
+    }
+    .log-area {
+      background: #1d1d1f;
+      color: #34c759;
+      font-family: 'SF Mono', Monaco, monospace;
+      font-size: 0.75rem;
+      padding: 12px;
+      border-radius: 10px;
+      height: 150px;
+      overflow-y: auto;
+      margin-top: 16px;
+    }
+    .log-line {
+      margin-bottom: 4px;
+    }
+    .log-line.error { color: #ff3b30; }
+    .log-line.success { color: #34c759; }
+    .log-line.info { color: #0071e3; }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      background: rgba(0,113,227,0.1);
+      color: #0071e3;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      margin-left: 8px;
+    }
+    .quick-presets {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .preset-btn {
+      padding: 8px 14px;
+      background: #f5f5f7;
+      color: #1d1d1f;
+      border: 1px solid #d2d2d7;
+      font-size: 0.8rem;
+    }
+    .preset-btn:hover {
+      background: #e8e8ed;
+      border-color: #0071e3;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>CBS Control <span class="badge">Credit Based Shaper</span></h1>
+    <a href="/" class="back-btn">Back</a>
+  </div>
+
+  <div class="main-grid">
+    <div class="panel">
+      <div id="statusBar" class="status-bar disconnected">
+        <div class="status-dot"></div>
+        <span id="statusText">Connecting...</span>
+      </div>
+      <div id="deviceInfo" class="device-info">Device: -</div>
+
+      <h2>Quick Presets</h2>
+      <div class="quick-presets">
+        <button class="preset-btn" onclick="applyPreset([8,9,10,11], 0, 100000)">Ports 8-11, TC0, 100Mbps</button>
+        <button class="preset-btn" onclick="applyPreset([1,2,3,4], 7, 50000)">Ports 1-4, TC7, 50Mbps</button>
+      </div>
+
+      <h2>Configure CBS</h2>
+      <div class="form-group">
+        <label>Select Ports</label>
+        <div class="port-checkboxes" id="portCheckboxes">
+          <!-- Generated by JS -->
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group" style="flex:1">
+          <label>Traffic Class (0-7)</label>
+          <select id="trafficClass">
+            <option value="0">TC 0 (Lowest)</option>
+            <option value="1">TC 1</option>
+            <option value="2">TC 2</option>
+            <option value="3">TC 3</option>
+            <option value="4">TC 4</option>
+            <option value="5">TC 5</option>
+            <option value="6">TC 6</option>
+            <option value="7" selected>TC 7 (Highest)</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:1">
+          <label>Idle Slope (kbps)</label>
+          <input type="number" id="idleSlope" value="100000" min="0" max="1000000" step="1000">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Idle Slope Presets</label>
+        <div class="form-row">
+          <button class="preset-btn" onclick="document.getElementById('idleSlope').value=10000">10 Mbps</button>
+          <button class="preset-btn" onclick="document.getElementById('idleSlope').value=50000">50 Mbps</button>
+          <button class="preset-btn" onclick="document.getElementById('idleSlope').value=100000">100 Mbps</button>
+          <button class="preset-btn" onclick="document.getElementById('idleSlope').value=500000">500 Mbps</button>
+        </div>
+      </div>
+
+      <button class="apply-btn" id="applyBtn" onclick="applyCBS()">Apply CBS</button>
+      <button class="clear-btn" onclick="clearSelectedCBS()">Clear Selected Ports CBS</button>
+
+      <div class="log-area" id="logArea">
+        <div class="log-line info">> CBS Control Ready</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div style="display:flex;align-items:center;margin-bottom:16px;">
+        <h2 style="margin-bottom:0">Current CBS Config</h2>
+        <button class="refresh-btn" onclick="refreshConfig()">Refresh</button>
+      </div>
+      <div class="config-list" id="configList">
+        <div class="empty-state">
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
+          </svg>
+          <p>Loading configuration...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const CLI_PATH = '/home/keti/Microchip_VelocityDRIVE_CT-CLI-linux-2025.07.12/mvdct.cli';
+    const DEVICE = '/dev/ttyACM0';
+    let selectedPorts = new Set();
+    let currentConfig = [];
+
+    // Generate port checkboxes
+    function initPorts() {
+      const container = document.getElementById('portCheckboxes');
+      container.innerHTML = '';
+      for (let i = 1; i <= 12; i++) {
+        const div = document.createElement('div');
+        div.className = 'port-check';
+        div.innerHTML = `<input type="checkbox" id="port${i}" value="${i}"><span>Port ${i}</span>`;
+        div.onclick = () => togglePort(i, div);
+        container.appendChild(div);
+      }
+    }
+
+    function togglePort(port, el) {
+      if (selectedPorts.has(port)) {
+        selectedPorts.delete(port);
+        el.classList.remove('selected');
+      } else {
+        selectedPorts.add(port);
+        el.classList.add('selected');
+      }
+    }
+
+    function selectPorts(ports) {
+      selectedPorts.clear();
+      document.querySelectorAll('.port-check').forEach((el, idx) => {
+        const port = idx + 1;
+        if (ports.includes(port)) {
+          selectedPorts.add(port);
+          el.classList.add('selected');
+        } else {
+          el.classList.remove('selected');
+        }
+      });
+    }
+
+    function log(msg, type = '') {
+      const area = document.getElementById('logArea');
+      const line = document.createElement('div');
+      line.className = 'log-line ' + type;
+      line.textContent = '> ' + msg;
+      area.appendChild(line);
+      area.scrollTop = area.scrollHeight;
+    }
+
+    function setStatus(status, text) {
+      const bar = document.getElementById('statusBar');
+      const statusText = document.getElementById('statusText');
+      bar.className = 'status-bar ' + status;
+      statusText.textContent = text;
+    }
+
+    async function checkDevice() {
+      setStatus('loading', 'Connecting to device...');
+      try {
+        const res = await fetch('/api/cbs/device');
+        const data = await res.json();
+        if (data.success) {
+          setStatus('connected', 'Connected');
+          document.getElementById('deviceInfo').textContent = 'Device: ' + data.device;
+          log('Connected: ' + data.device, 'success');
+          refreshConfig();
+        } else {
+          setStatus('disconnected', 'Disconnected');
+          log('Error: ' + data.error, 'error');
+        }
+      } catch (e) {
+        setStatus('disconnected', 'Connection Error');
+        log('Failed to connect: ' + e.message, 'error');
+      }
+    }
+
+    async function refreshConfig() {
+      log('Refreshing configuration...', 'info');
+      try {
+        const res = await fetch('/api/cbs/config');
+        const data = await res.json();
+        if (data.success) {
+          currentConfig = data.config;
+          renderConfig();
+          log('Config loaded: ' + data.config.length + ' CBS entries', 'success');
+        } else {
+          log('Error loading config: ' + data.error, 'error');
+        }
+      } catch (e) {
+        log('Failed to load config: ' + e.message, 'error');
+      }
+    }
+
+    function renderConfig() {
+      const list = document.getElementById('configList');
+      if (currentConfig.length === 0) {
+        list.innerHTML = `
+          <div class="empty-state">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/>
+            </svg>
+            <p>No CBS configured</p>
+          </div>
+        `;
+        return;
+      }
+
+      list.innerHTML = currentConfig.map(c => `
+        <div class="config-item">
+          <div class="config-info">
+            <span class="config-port">Port ${c.port}</span>
+            <span class="config-details">TC${c.tc} | Idle Slope: ${(c.idleSlope/1000).toFixed(0)} Mbps</span>
+          </div>
+          <div class="config-actions">
+            <button class="delete-btn" onclick="deleteCBS(${c.port}, ${c.tc})">Delete</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function applyCBS() {
+      if (selectedPorts.size === 0) {
+        log('Please select at least one port', 'error');
+        return;
+      }
+      const tc = document.getElementById('trafficClass').value;
+      const idleSlope = document.getElementById('idleSlope').value;
+      const ports = Array.from(selectedPorts);
+
+      document.getElementById('applyBtn').disabled = true;
+      log(`Applying CBS: Ports ${ports.join(',')}, TC${tc}, ${idleSlope} kbps`, 'info');
+
+      try {
+        const res = await fetch('/api/cbs/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ports, tc: parseInt(tc), idleSlope: parseInt(idleSlope) })
+        });
+        const data = await res.json();
+        if (data.success) {
+          log(`CBS applied to ${data.results.filter(r => r.success).length}/${ports.length} ports`, 'success');
+          refreshConfig();
+        } else {
+          log('Error: ' + data.error, 'error');
+        }
+      } catch (e) {
+        log('Failed: ' + e.message, 'error');
+      }
+      document.getElementById('applyBtn').disabled = false;
+    }
+
+    async function deleteCBS(port, tc) {
+      log(`Deleting CBS: Port ${port}, TC${tc}`, 'info');
+      try {
+        const res = await fetch('/api/cbs/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ port, tc })
+        });
+        const data = await res.json();
+        if (data.success) {
+          log('CBS deleted', 'success');
+          refreshConfig();
+        } else {
+          log('Error: ' + data.error, 'error');
+        }
+      } catch (e) {
+        log('Failed: ' + e.message, 'error');
+      }
+    }
+
+    async function clearSelectedCBS() {
+      if (selectedPorts.size === 0) {
+        log('Please select ports to clear', 'error');
+        return;
+      }
+      const ports = Array.from(selectedPorts);
+      log(`Clearing CBS on ports: ${ports.join(',')}`, 'info');
+
+      for (const port of ports) {
+        const portConfigs = currentConfig.filter(c => c.port === port);
+        for (const cfg of portConfigs) {
+          await deleteCBS(cfg.port, cfg.tc);
+        }
+      }
+    }
+
+    function applyPreset(ports, tc, idleSlope) {
+      selectPorts(ports);
+      document.getElementById('trafficClass').value = tc;
+      document.getElementById('idleSlope').value = idleSlope;
+      log(`Preset loaded: Ports ${ports.join(',')}, TC${tc}, ${idleSlope} kbps`, 'info');
+    }
+
+    // Init
+    initPorts();
+    checkDevice();
+  </script>
+</body>
+</html>
