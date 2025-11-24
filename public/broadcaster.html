@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Broadcast - MJPEG Stream + CBS</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+      background: #f5f5f7;
+      min-height: 100vh;
+      color: #1d1d1f;
+      padding: 20px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      max-width: 2200px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    h1 { font-size: 1.5rem; font-weight: 600; }
+    .back-btn {
+      padding: 8px 16px;
+      background: #fff;
+      color: #0071e3;
+      text-decoration: none;
+      border-radius: 980px;
+      font-size: 0.85rem;
+      border: 1px solid #d2d2d7;
+    }
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 20px;
+      max-width: 2200px;
+      margin: 0 auto;
+    }
+    @media (max-width: 1400px) {
+      .main-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 900px) {
+      .main-grid { grid-template-columns: 1fr; }
+    }
+    .panel {
+      background: #fff;
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    }
+    .panel h2 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #1d1d1f;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    video, canvas { width: 100%; border-radius: 10px; background: #1d1d1f; }
+    canvas#canvas { display: none; }
+    .controls {
+      margin-top: 16px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 0.9rem;
+      border: none;
+      border-radius: 980px;
+      cursor: pointer;
+      font-weight: 500;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+    .start-btn { background: #0071e3; color: white; }
+    .stop-btn { background: #ff3b30; color: white; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    select, input[type="number"] {
+      padding: 8px 12px;
+      font-size: 0.85rem;
+      border: 1px solid #d2d2d7;
+      border-radius: 8px;
+      background: #fff;
+      font-family: inherit;
+    }
+    .settings { display: flex; gap: 8px; align-items: center; margin-left: auto; flex-wrap: wrap; }
+    .settings label { font-size: 0.8rem; color: #86868b; }
+    .status {
+      padding: 10px;
+      border-radius: 10px;
+      text-align: center;
+      font-weight: 500;
+      margin-bottom: 16px;
+      font-size: 0.85rem;
+    }
+    .status.ready { background: #f5f5f7; color: #86868b; }
+    .status.live { background: rgba(52,199,89,0.1); color: #34c759; }
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    .chart-box {
+      background: #f5f5f7;
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .chart-box h3 {
+      font-size: 0.7rem;
+      color: #86868b;
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+    .chart-wrapper { height: 80px; }
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #f5f5f7;
+      font-size: 0.8rem;
+    }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-label { color: #86868b; }
+    .stat-value { font-weight: 600; color: #0071e3; }
+    .viewers-box {
+      text-align: center;
+      padding: 16px;
+      background: #f5f5f7;
+      border-radius: 12px;
+      margin-top: 12px;
+    }
+    .viewers-box .num { font-size: 1.8rem; font-weight: 600; color: #0071e3; }
+    .viewers-box .lbl { font-size: 0.75rem; color: #86868b; }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      background: rgba(0,113,227,0.1);
+      color: #0071e3;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .badge.green { background: rgba(52,199,89,0.1); color: #34c759; }
+    .badge.red { background: rgba(255,59,48,0.1); color: #ff3b30; }
+
+    /* CBS Styles */
+    .cbs-status {
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .cbs-status.connected { background: rgba(52,199,89,0.1); color: #34c759; }
+    .cbs-status.disconnected { background: rgba(255,59,48,0.1); color: #ff3b30; }
+    .cbs-status.loading { background: rgba(0,113,227,0.1); color: #0071e3; }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .port-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .port-btn {
+      padding: 8px 4px;
+      background: #f5f5f7;
+      border: 2px solid transparent;
+      border-radius: 8px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .port-btn:hover { background: #e8e8ed; }
+    .port-btn.selected { background: rgba(0,113,227,0.1); border-color: #0071e3; color: #0071e3; }
+    .cbs-form { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    .cbs-form select, .cbs-form input { flex: 1; min-width: 80px; }
+    .cbs-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+    .cbs-actions button { flex: 1; padding: 10px; font-size: 0.8rem; }
+    .apply-btn { background: #34c759; color: white; }
+    .clear-btn { background: #ff3b30; color: white; }
+    .preset-btns { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+    .preset-btn {
+      padding: 6px 10px;
+      background: #f5f5f7;
+      border: 1px solid #d2d2d7;
+      font-size: 0.7rem;
+      border-radius: 6px;
+    }
+    .preset-btn:hover { background: #e8e8ed; border-color: #0071e3; }
+    .cli-log {
+      background: #1d1d1f;
+      color: #00ff00;
+      font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+      font-size: 0.65rem;
+      padding: 10px;
+      border-radius: 8px;
+      height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .cli-log .cmd { color: #0071e3; }
+    .cli-log .out { color: #34c759; }
+    .cli-log .err { color: #ff3b30; }
+    .cli-log .info { color: #ff9500; }
+    .config-list {
+      max-height: 120px;
+      overflow-y: auto;
+      margin-bottom: 12px;
+    }
+    .config-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 10px;
+      background: #f5f5f7;
+      border-radius: 6px;
+      margin-bottom: 4px;
+      font-size: 0.75rem;
+    }
+    .config-item button {
+      padding: 4px 8px;
+      font-size: 0.65rem;
+      background: rgba(255,59,48,0.1);
+      color: #ff3b30;
+      border-radius: 4px;
+    }
+    .section-title {
+      font-size: 0.75rem;
+      color: #86868b;
+      margin-bottom: 8px;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Broadcaster <span class="badge">MJPEG</span> <span class="badge green">CBS</span></h1>
+    <a href="/" class="back-btn">Back</a>
+  </div>
+
+  <div class="main-grid">
+    <!-- Video Panel -->
+    <div class="panel">
+      <h2>Preview</h2>
+      <video id="localVideo" autoplay muted playsinline></video>
+      <canvas id="canvas"></canvas>
+      <div class="controls">
+        <button id="startBtn" class="start-btn">Start</button>
+        <button id="stopBtn" class="stop-btn" disabled>Stop</button>
+        <div class="settings">
+          <label>Res</label>
+          <select id="resolutionSelect">
+            <option value="1920x1080">1080p</option>
+            <option value="1280x720" selected>720p</option>
+            <option value="640x480">480p</option>
+          </select>
+          <label>FPS</label>
+          <select id="fpsSelect">
+            <option value="60">60</option>
+            <option value="30" selected>30</option>
+            <option value="15">15</option>
+          </select>
+          <label>Q</label>
+          <select id="qualitySelect">
+            <option value="0.9">Hi</option>
+            <option value="0.7" selected>Mid</option>
+            <option value="0.5">Lo</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stats Panel -->
+    <div class="panel">
+      <div id="status" class="status ready">Ready</div>
+      <h2>Live Stats</h2>
+      <div class="charts-grid">
+        <div class="chart-box">
+          <h3>Bitrate (Mbps)</h3>
+          <div class="chart-wrapper"><canvas id="bitrateChart"></canvas></div>
+        </div>
+        <div class="chart-box">
+          <h3>Frame Rate (fps)</h3>
+          <div class="chart-wrapper"><canvas id="fpsChart"></canvas></div>
+        </div>
+        <div class="chart-box">
+          <h3>Latency (ms)</h3>
+          <div class="chart-wrapper"><canvas id="latencyChart"></canvas></div>
+        </div>
+        <div class="chart-box">
+          <h3>Frame Size (KB)</h3>
+          <div class="chart-wrapper"><canvas id="frameSizeChart"></canvas></div>
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <div class="stat-row"><span class="stat-label">Resolution</span><span class="stat-value" id="resolution">-</span></div>
+        <div class="stat-row"><span class="stat-label">Frames Sent</span><span class="stat-value" id="framesSent">-</span></div>
+        <div class="stat-row"><span class="stat-label">Total Sent</span><span class="stat-value" id="bytesSent">-</span></div>
+      </div>
+      <div class="viewers-box">
+        <div class="num" id="viewerCount">0</div>
+        <div class="lbl">Viewers</div>
+      </div>
+    </div>
+
+    <!-- CBS Panel -->
+    <div class="panel">
+      <h2>CBS Control <span class="badge green">Credit Based Shaper</span></h2>
+      <div id="cbsStatus" class="cbs-status loading">
+        <div class="status-dot"></div>
+        <span id="cbsStatusText">Connecting...</span>
+      </div>
+
+      <div class="section-title">Quick Presets</div>
+      <div class="preset-btns">
+        <button class="preset-btn" onclick="applyPreset([8,9,10,11], 0, 100000)">P8-11 TC0 100M</button>
+        <button class="preset-btn" onclick="applyPreset([1,2,3,4], 0, 50000)">P1-4 TC0 50M</button>
+        <button class="preset-btn" onclick="applyPreset([1,2,3,4,5,6,7,8,9,10,11,12], 0, 100000)">ALL TC0 100M</button>
+      </div>
+
+      <div class="section-title">Select Ports</div>
+      <div class="port-grid" id="portGrid"></div>
+
+      <div class="section-title">Settings</div>
+      <div class="cbs-form">
+        <select id="tcSelect">
+          <option value="0" selected>TC0</option>
+          <option value="1">TC1</option>
+          <option value="2">TC2</option>
+          <option value="3">TC3</option>
+          <option value="4">TC4</option>
+          <option value="5">TC5</option>
+          <option value="6">TC6</option>
+          <option value="7">TC7</option>
+        </select>
+        <input type="number" id="idleSlope" value="100000" min="0" max="1000000" step="1000" placeholder="kbps">
+      </div>
+      <div class="preset-btns">
+        <button class="preset-btn" onclick="setSlope(10000)">10M</button>
+        <button class="preset-btn" onclick="setSlope(50000)">50M</button>
+        <button class="preset-btn" onclick="setSlope(100000)">100M</button>
+        <button class="preset-btn" onclick="setSlope(500000)">500M</button>
+        <button class="preset-btn" onclick="setSlope(1000000)">1G</button>
+      </div>
+
+      <div class="cbs-actions">
+        <button class="apply-btn" onclick="applyCBS()">Apply CBS</button>
+        <button class="clear-btn" onclick="clearCBS()">Clear</button>
+      </div>
+
+      <div class="section-title">Current Config</div>
+      <div class="config-list" id="configList">Loading...</div>
+
+      <div class="section-title">CLI Log</div>
+      <div class="cli-log" id="cliLog">> CBS Control initialized\n</div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // ========== STREAMING ==========
+    const socket = io();
+    const video = document.getElementById('localVideo');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusEl = document.getElementById('status');
+
+    let localStream = null;
+    let streaming = false;
+    let frameInterval = null;
+
+    const MAX_POINTS = 60;
+    const statsData = { bitrate: [], fps: [], latency: [], frameSize: [], labels: [] };
+    let stats = { framesSent: 0, bytesSent: 0, lastTime: Date.now(), lastBytes: 0, lastFrames: 0, lastFrameSize: 0, lastLatency: 0 };
+
+    const chartOpts = {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 0 },
+      scales: {
+        x: { display: false },
+        y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { font: { size: 8 }, color: '#86868b' } }
+      },
+      plugins: { legend: { display: false } },
+      elements: { point: { radius: 0 }, line: { tension: 0.3, borderWidth: 2 } }
+    };
+
+    function makeChart(id, color) {
+      return new Chart(document.getElementById(id), {
+        type: 'line',
+        data: { labels: [], datasets: [{ data: [], borderColor: color, backgroundColor: color + '20', fill: true }] },
+        options: chartOpts
+      });
+    }
+
+    const charts = {
+      bitrate: makeChart('bitrateChart', '#0071e3'),
+      fps: makeChart('fpsChart', '#34c759'),
+      latency: makeChart('latencyChart', '#ff9500'),
+      frameSize: makeChart('frameSizeChart', '#af52de')
+    };
+
+    function updateCharts() {
+      Object.keys(charts).forEach(key => {
+        charts[key].data.labels = statsData.labels;
+        charts[key].data.datasets[0].data = statsData[key];
+        charts[key].update('none');
+      });
+    }
+
+    startBtn.onclick = async () => {
+      try {
+        const [w, h] = document.getElementById('resolutionSelect').value.split('x').map(Number);
+        const fps = parseInt(document.getElementById('fpsSelect').value);
+        localStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps } },
+          audio: false
+        });
+        video.srcObject = localStream;
+        video.onloadedmetadata = () => {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          document.getElementById('resolution').textContent = video.videoWidth + 'x' + video.videoHeight;
+          startStreaming();
+        };
+        socket.emit('broadcaster');
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        statusEl.textContent = 'LIVE';
+        statusEl.className = 'status live';
+      } catch (e) {
+        alert('Camera error. Use localhost.');
+      }
+    };
+
+    function startStreaming() {
+      streaming = true;
+      const fps = parseInt(document.getElementById('fpsSelect').value);
+      const quality = parseFloat(document.getElementById('qualitySelect').value);
+      frameInterval = setInterval(() => streaming && sendFrame(quality), 1000 / fps);
+      setInterval(updateStats, 1000);
+    }
+
+    async function sendFrame(quality) {
+      const sendTime = Date.now();
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const frame = canvas.toDataURL('image/jpeg', quality);
+      const frameBytes = frame.length * 0.75;
+      try {
+        const res = await fetch('/frame', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ frame, timestamp: sendTime })
+        });
+        if (res.ok) {
+          stats.framesSent++;
+          stats.bytesSent += frameBytes;
+          stats.lastFrameSize = frameBytes;
+          stats.lastLatency = Date.now() - sendTime;
+        }
+      } catch (e) {}
+    }
+
+    function updateStats() {
+      const now = Date.now();
+      const elapsed = (now - stats.lastTime) / 1000;
+      const currentFps = (stats.framesSent - stats.lastFrames) / elapsed;
+      const bitrate = ((stats.bytesSent - stats.lastBytes) * 8) / elapsed / 1000000;
+
+      socket.emit('stats', { fps: currentFps, bitrate: bitrate * 1000000, latency: stats.lastLatency, frameSize: stats.lastFrameSize });
+
+      statsData.labels.push('');
+      statsData.bitrate.push(bitrate);
+      statsData.fps.push(currentFps);
+      statsData.latency.push(stats.lastLatency);
+      statsData.frameSize.push(stats.lastFrameSize / 1024);
+
+      if (statsData.labels.length > MAX_POINTS) {
+        Object.keys(statsData).forEach(k => statsData[k].shift());
+      }
+      updateCharts();
+
+      stats.lastTime = now;
+      stats.lastBytes = stats.bytesSent;
+      stats.lastFrames = stats.framesSent;
+
+      document.getElementById('framesSent').textContent = stats.framesSent.toLocaleString();
+      document.getElementById('bytesSent').textContent = formatBytes(stats.bytesSent);
+
+      fetch('/api/status').then(r => r.json()).then(d => {
+        document.getElementById('viewerCount').textContent = d.viewers;
+      }).catch(() => {});
+    }
+
+    stopBtn.onclick = () => {
+      streaming = false;
+      clearInterval(frameInterval);
+      localStream?.getTracks().forEach(t => t.stop());
+      location.reload();
+    };
+
+    function formatBytes(b) {
+      if (b >= 1073741824) return (b / 1073741824).toFixed(2) + ' GB';
+      if (b >= 1048576) return (b / 1048576).toFixed(2) + ' MB';
+      if (b >= 1024) return (b / 1024).toFixed(2) + ' KB';
+      return b + ' B';
+    }
+
+    // ========== CBS CONTROL ==========
+    let selectedPorts = new Set();
+    let cbsConfig = [];
+
+    function initPorts() {
+      const grid = document.getElementById('portGrid');
+      for (let i = 1; i <= 12; i++) {
+        const btn = document.createElement('button');
+        btn.className = 'port-btn';
+        btn.textContent = i;
+        btn.onclick = () => togglePort(i, btn);
+        grid.appendChild(btn);
+      }
+    }
+
+    function togglePort(port, btn) {
+      if (selectedPorts.has(port)) {
+        selectedPorts.delete(port);
+        btn.classList.remove('selected');
+      } else {
+        selectedPorts.add(port);
+        btn.classList.add('selected');
+      }
+    }
+
+    function selectPorts(ports) {
+      selectedPorts.clear();
+      document.querySelectorAll('.port-btn').forEach((btn, idx) => {
+        const port = idx + 1;
+        if (ports.includes(port)) {
+          selectedPorts.add(port);
+          btn.classList.add('selected');
+        } else {
+          btn.classList.remove('selected');
+        }
+      });
+    }
+
+    function setSlope(val) {
+      document.getElementById('idleSlope').value = val;
+    }
+
+    function cliLog(msg, type = 'out') {
+      const log = document.getElementById('cliLog');
+      const timestamp = new Date().toLocaleTimeString();
+      log.innerHTML += `<span class="${type}">[${timestamp}] ${msg}</span>\n`;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function setCbsStatus(status, text) {
+      const el = document.getElementById('cbsStatus');
+      el.className = 'cbs-status ' + status;
+      document.getElementById('cbsStatusText').textContent = text;
+    }
+
+    async function checkDevice() {
+      setCbsStatus('loading', 'Connecting...');
+      try {
+        const res = await fetch('/api/cbs/device');
+        const data = await res.json();
+        if (data.success) {
+          setCbsStatus('connected', data.device.substring(0, 30));
+          cliLog('Device: ' + data.device, 'info');
+          refreshConfig();
+        } else {
+          setCbsStatus('disconnected', 'Not connected');
+          cliLog('Error: ' + data.error, 'err');
+        }
+      } catch (e) {
+        setCbsStatus('disconnected', 'Connection failed');
+        cliLog('Connection error: ' + e.message, 'err');
+      }
+    }
+
+    async function refreshConfig() {
+      cliLog('Fetching CBS config for all ports...', 'cmd');
+      try {
+        const res = await fetch('/api/cbs/config');
+        const data = await res.json();
+        if (data.success) {
+          cbsConfig = data.config;
+          renderConfig();
+          if (data.cliOutput) {
+            cliLog(data.cliOutput, 'out');
+          }
+          cliLog(`Found ${cbsConfig.length} CBS entries`, 'info');
+        }
+      } catch (e) {
+        cliLog('Failed: ' + e.message, 'err');
+      }
+    }
+
+    function renderConfig() {
+      const list = document.getElementById('configList');
+      if (cbsConfig.length === 0) {
+        list.innerHTML = '<div style="color:#86868b;font-size:0.75rem;padding:10px;text-align:center;">No CBS configured</div>';
+        return;
+      }
+      list.innerHTML = cbsConfig.map(c => `
+        <div class="config-item">
+          <span>Port ${c.port} | TC${c.tc} | ${(c.idleSlope/1000).toFixed(0)} Mbps</span>
+          <button onclick="deleteCBS(${c.port}, ${c.tc})">X</button>
+        </div>
+      `).join('');
+    }
+
+    async function applyCBS() {
+      if (selectedPorts.size === 0) {
+        cliLog('ERROR: Select at least one port', 'err');
+        return;
+      }
+      const tc = document.getElementById('tcSelect').value;
+      const idleSlope = document.getElementById('idleSlope').value;
+      const ports = Array.from(selectedPorts);
+
+      cliLog(`\n========== APPLY CBS ==========`, 'cmd');
+      cliLog(`Ports: ${ports.join(', ')} | TC: ${tc} | Idle Slope: ${idleSlope} kbps`, 'cmd');
+
+      try {
+        const res = await fetch('/api/cbs/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ports, tc: parseInt(tc), idleSlope: parseInt(idleSlope) })
+        });
+        const data = await res.json();
+        if (data.cliOutputs) {
+          data.cliOutputs.forEach(o => {
+            cliLog(`\n[Port ${o.port}] CMD: ${o.cmd}`, 'cmd');
+            if (o.output) cliLog(o.output, 'out');
+            if (o.error) cliLog(o.error, 'err');
+          });
+        }
+        const success = data.results.filter(r => r.success).length;
+        cliLog(`\nResult: ${success}/${ports.length} ports configured`, success === ports.length ? 'info' : 'err');
+        refreshConfig();
+      } catch (e) {
+        cliLog('Failed: ' + e.message, 'err');
+      }
+    }
+
+    async function deleteCBS(port, tc) {
+      cliLog(`\n========== DELETE CBS ==========`, 'cmd');
+      cliLog(`Port: ${port} | TC: ${tc}`, 'cmd');
+      try {
+        const res = await fetch('/api/cbs/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ port, tc })
+        });
+        const data = await res.json();
+        if (data.cliOutput) {
+          cliLog(`CMD: ${data.cmd}`, 'cmd');
+          cliLog(data.cliOutput, data.success ? 'out' : 'err');
+        }
+        cliLog(data.success ? 'Deleted successfully' : 'Delete failed', data.success ? 'info' : 'err');
+        refreshConfig();
+      } catch (e) {
+        cliLog('Failed: ' + e.message, 'err');
+      }
+    }
+
+    async function clearCBS() {
+      if (selectedPorts.size === 0) {
+        cliLog('ERROR: Select ports to clear', 'err');
+        return;
+      }
+      const ports = Array.from(selectedPorts);
+      cliLog(`\n========== CLEAR CBS ==========`, 'cmd');
+      cliLog(`Clearing ports: ${ports.join(', ')}`, 'cmd');
+
+      for (const port of ports) {
+        const portConfigs = cbsConfig.filter(c => c.port === port);
+        for (const cfg of portConfigs) {
+          await deleteCBS(cfg.port, cfg.tc);
+        }
+      }
+    }
+
+    function applyPreset(ports, tc, idleSlope) {
+      selectPorts(ports);
+      document.getElementById('tcSelect').value = tc;
+      document.getElementById('idleSlope').value = idleSlope;
+      cliLog(`Preset: Ports ${ports.join(',')} TC${tc} ${idleSlope}kbps`, 'info');
+    }
+
+    // Init
+    initPorts();
+    checkDevice();
+  </script>
+</body>
+</html>

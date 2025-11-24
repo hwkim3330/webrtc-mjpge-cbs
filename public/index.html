@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MJPEG Stream</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+      background: #f5f5f7;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: #1d1d1f;
+    }
+    .container {
+      text-align: center;
+      padding: 60px 40px;
+      max-width: 600px;
+    }
+    h1 {
+      font-size: 3rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+      color: #1d1d1f;
+    }
+    p {
+      color: #86868b;
+      margin-bottom: 50px;
+      font-size: 1.25rem;
+      font-weight: 400;
+    }
+    .buttons {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    a {
+      display: inline-block;
+      padding: 18px 36px;
+      font-size: 1.1rem;
+      text-decoration: none;
+      border-radius: 980px;
+      transition: all 0.3s ease;
+      font-weight: 500;
+    }
+    .broadcast-btn {
+      background: #0071e3;
+      color: white;
+    }
+    .broadcast-btn:hover {
+      background: #0077ed;
+      transform: scale(1.02);
+    }
+    .watch-btn {
+      background: #ffffff;
+      color: #0071e3;
+      border: 1px solid #d2d2d7;
+    }
+    .watch-btn:hover {
+      background: #f5f5f7;
+      border-color: #0071e3;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>MJPEG Stream</h1>
+    <p>Real-time Webcam Streaming</p>
+    <div class="buttons">
+      <a href="/broadcast" class="broadcast-btn">Broadcast</a>
+      <a href="/watch" class="watch-btn">Watch</a>
+      <a href="/cbs" class="watch-btn" style="background:#34c759;color:#fff;border:none;">CBS Control</a>
+    </div>
+  </div>
+</body>
+</html>
