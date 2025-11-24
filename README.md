@@ -1,209 +1,217 @@
-# MJPEG Stream + CBS Control
-<img width="1905" height="1005" alt="image" src="https://github.com/user-attachments/assets/cd93f9e6-3acc-4498-a0ac-69320e08b7f6" />
-https://www.youtube.com/shorts/27pEYafkC0E?feature=share
+<p align="center">
+  <img src="https://img.shields.io/badge/WebRTC-MJPEG-blue?style=for-the-badge&logo=webrtc" alt="WebRTC">
+  <img src="https://img.shields.io/badge/TSN-CBS-green?style=for-the-badge" alt="TSN CBS">
+  <img src="https://img.shields.io/badge/Node.js-18+-339933?style=for-the-badge&logo=node.js&logoColor=white" alt="Node.js">
+  <img src="https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge" alt="License">
+</p>
 
-Real-time MJPEG webcam streaming server with integrated CBS (Credit Based Shaper) control for Microchip LAN969x TSN switches.
+<h1 align="center">
+  🎥 MJPEG Stream + CBS Control
+</h1>
 
-## Features
+<p align="center">
+  <strong>Real-time MJPEG Webcam Streaming with TSN CBS (Credit Based Shaper) Control</strong>
+  <br>
+  <em>for Microchip LAN969x TSN Switch</em>
+</p>
 
-- **MJPEG Streaming**: Browser-based webcam capture and streaming
-- **Real-time Statistics**: Bitrate, FPS, Latency, Frame Size graphs
-- **CBS Control**: GUI for configuring Credit Based Shaper on TSN switch ports
-- **Low Latency Mode**: Frame dropping mechanism to prevent queue buildup
-- **Independent Viewer Streams**: Slow viewers don't block others
-- **Old Device Support**: Presets for legacy hardware (Old Mac, low-spec devices)
+<p align="center">
+  <a href="#-features">Features</a> •
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-architecture">Architecture</a> •
+  <a href="#-api">API</a> •
+  <a href="#-cbs-configuration">CBS Config</a>
+</p>
 
-## Architecture
+---
 
-```
-┌─────────────┐     Socket.IO      ┌─────────────┐     MJPEG HTTP     ┌─────────────┐
-│ Broadcaster │ ──── Binary ────→ │   Server    │ ───── Stream ────→ │   Viewer    │
-│  (Browser)  │     (no wait)      │  (Node.js)  │   (non-blocking)   │  (Browser)  │
-└─────────────┘                    └─────────────┘                    └─────────────┘
-      │                                  │
-      │ getUserMedia                     │ CBS CLI
-      │ Canvas → JPEG                    │ (mvdct.cli)
-      ▼                                  ▼
-   Webcam                          TSN Switch
-                                   (LAN969x)
-```
+## 📸 Demo
 
-## Requirements
+<p align="center">
+  <img width="100%" alt="MJPEG Stream CBS Demo" src="https://github.com/user-attachments/assets/cd93f9e6-3acc-4498-a0ac-69320e08b7f6" />
+</p>
 
-- Node.js 16+
-- Modern web browser (Chrome, Firefox, Safari, Edge)
-- Microchip LAN969x TSN Switch (optional, for CBS control)
-- VelocityDRIVE CT CLI tool (optional, for CBS control)
+<p align="center">
+  <a href="https://www.youtube.com/shorts/27pEYafkC0E">
+    <img src="https://img.shields.io/badge/▶_Watch_Demo-YouTube-red?style=for-the-badge&logo=youtube" alt="Watch Demo on YouTube">
+  </a>
+</p>
 
-## Quick Start
+---
+
+## ✨ Features
+
+| Feature | Description |
+|---------|-------------|
+| 🎬 **MJPEG Streaming** | Browser-based webcam capture and real-time streaming |
+| 📊 **Real-time Stats** | Live graphs for Bitrate, FPS, Latency, Frame Size |
+| ⚡ **Low Latency** | Frame dropping mechanism prevents queue buildup |
+| 🔧 **CBS Control** | GUI for Credit Based Shaper configuration |
+| 👥 **Multi-Viewer** | Independent streams - slow viewers don't block others |
+| 📱 **Legacy Support** | Presets for old devices (Old Mac, low-spec hardware) |
+
+---
+
+## 🚀 Quick Start
 
 ```bash
 # Clone repository
 git clone https://github.com/hwkim3330/webrtc-mjpge-cbs.git
 cd webrtc-mjpge-cbs
 
-# Install dependencies
+# Install & Run
 npm install
-
-# Start server
-npm start
-
-# Or use the start script
 ./start.sh
 ```
 
-## Access URLs
+### 🌐 Access URLs
 
 | Page | URL | Description |
-|------|-----|-------------|
-| Main | http://localhost:3000 | Landing page |
-| Broadcast | http://localhost:3000/broadcast | Webcam streaming + CBS control |
-| Watch | http://[IP]:3000/watch | Viewer page with stats |
-| CBS Only | http://localhost:3000/cbs | CBS control only |
-| Direct Stream | http://[IP]:3000/stream.mjpg | Raw MJPEG stream |
+|:----:|-----|-------------|
+| 🏠 | `http://localhost:3000` | Main landing page |
+| 📹 | `http://localhost:3000/broadcast` | Webcam streaming + CBS control |
+| 👁️ | `http://[IP]:3000/watch` | Viewer page with stats |
+| ⚙️ | `http://localhost:3000/cbs` | CBS control only |
+| 🎞️ | `http://[IP]:3000/stream.mjpg` | Raw MJPEG stream |
 
-## Streaming Presets
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────┐                        ┌─────────────────┐                        ┌─────────────────┐
+│   Broadcaster   │      Socket.IO         │     Server      │      MJPEG HTTP        │     Viewer      │
+│    (Browser)    │ ═══════════════════▶   │    (Node.js)    │ ═══════════════════▶   │    (Browser)    │
+│                 │    Binary Frame        │                 │   multipart/stream     │                 │
+└────────┬────────┘    (non-blocking)      └────────┬────────┘                        └─────────────────┘
+         │                                          │
+         │ getUserMedia                             │ CBS CLI
+         │ Canvas → JPEG                            │ (mvdct.cli)
+         ▼                                          ▼
+    ┌─────────┐                              ┌───────────┐
+    │ Webcam  │                              │TSN Switch │
+    └─────────┘                              │ (LAN969x) │
+                                             └───────────┘
+```
+
+---
+
+## 📁 Project Structure
+
+```
+webrtc-mjpge-cbs/
+├── 📄 server.js          # Express server + CBS API + MJPEG streaming
+├── 📄 package.json       # Dependencies
+├── 📄 start.sh           # Start script
+├── 📂 public/
+│   ├── 📄 index.html         # Landing page
+│   ├── 📄 broadcaster.html   # Broadcast + CBS control (3-column)
+│   ├── 📄 viewer.html        # Viewer with real-time stats
+│   └── 📄 cbs.html           # CBS control only
+└── 📄 README.md          # Documentation
+```
+
+---
+
+## 🎛️ Streaming Presets
 
 | Preset | Resolution | FPS | Quality | Use Case |
-|--------|-----------|-----|---------|----------|
-| **Low Latency** | 480p | 15 | Low | Default, recommended |
-| Balanced | 720p | 30 | Mid | General use |
-| Quality | 1080p | 30 | High | High quality needs |
-| **Old Mac** | 240p | 10 | Very Low | Legacy hardware |
+|:------:|:----------:|:---:|:-------:|----------|
+| ⚡ **Low Latency** | 480p | 15 | Low | Default, recommended |
+| ⚖️ Balanced | 720p | 30 | Mid | General use |
+| 🎨 Quality | 1080p | 30 | High | High quality needs |
+| 🖥️ **Old Mac** | 240p | 10 | Very Low | Legacy hardware |
 
-## Key Technical Features
+---
 
-### 1. Frame Dropping Mechanism
-Prevents latency buildup by skipping frames when previous transmission is incomplete:
-```javascript
-if (isSending) {
-  droppedFrames++;
-  return;  // Skip this frame
-}
-```
+## 🔌 API
 
-### 2. Non-blocking Viewer Streams
-Each viewer receives frames independently. Slow viewers don't block others:
-```javascript
-if (viewer.res.writableNeedDrain) {
-  viewer.droppedFrames++;
-  return;  // Skip slow viewer
-}
-```
-
-### 3. Socket.IO Binary Transfer
-Uses Socket.IO for efficient binary frame transfer with volatile emit:
-```javascript
-socket.volatile.emit('frame', { frame: buffer, timestamp });
-```
-
-## CBS Configuration
-
-### Prerequisites
-
-1. Download VelocityDRIVE CT CLI:
-```bash
-wget http://mscc-ent-open-source.s3-website-eu-west-1.amazonaws.com/public_root/velocitydrivect/2025.06/Microchip_VelocityDRIVE_CT-CLI-linux-2025.07.12.tgz
-tar -xzf Microchip_VelocityDRIVE_CT-CLI-linux-2025.07.12.tgz
-```
-
-2. Update CLI path in `server.js`:
-```javascript
-const CBS_CLI_PATH = '/path/to/mvdct.cli';
-const CBS_DEVICE = '/dev/ttyACM0';
-```
-
-3. Add user to dialout group:
-```bash
-sudo usermod -aG dialout $USER
-# Logout and login again
-```
-
-### CBS GUI Usage
-
-1. Open http://localhost:3000/broadcast
-2. Select ports (1-12)
-3. Choose Traffic Class (TC0-TC7, default: TC0)
-4. Set Idle Slope (kbps)
-5. Click "Apply CBS"
-
-### Quick Presets
-
-- **P8-11 TC0 100M**: Ports 8-11, Traffic Class 0, 100 Mbps
-- **P1-4 TC0 50M**: Ports 1-4, Traffic Class 0, 50 Mbps
-- **ALL TC0 100M**: All ports, Traffic Class 0, 100 Mbps
-
-## Project Structure
-
-```
-.
-├── server.js           # Express server + CBS API + MJPEG streaming
-├── package.json        # Dependencies
-├── start.sh            # Start script
-├── public/
-│   ├── index.html      # Main landing page
-│   ├── broadcaster.html # Broadcast + CBS control (3-column layout)
-│   ├── viewer.html     # Viewer page with real-time stats
-│   └── cbs.html        # CBS control only
-└── README.md           # This file
-```
-
-## API Endpoints
-
-### Streaming
+### Streaming Endpoints
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/stream.mjpg` | MJPEG stream (multipart/x-mixed-replace) |
-| POST | `/frame` | Receive frame from broadcaster (HTTP fallback) |
-| GET | `/api/status` | Get streaming status (broadcasting, viewers count) |
+|:------:|----------|-------------|
+| `GET` | `/stream.mjpg` | MJPEG stream (multipart/x-mixed-replace) |
+| `POST` | `/frame` | Receive frame from broadcaster |
+| `GET` | `/api/status` | Get streaming status |
 
-### CBS Control
+### CBS Control Endpoints
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/cbs/device` | Check device connection |
-| GET | `/api/cbs/config` | Get CBS config for all ports |
-| POST | `/api/cbs/set` | Set CBS on ports |
-| POST | `/api/cbs/delete` | Delete CBS config |
+|:------:|----------|-------------|
+| `GET` | `/api/cbs/device` | Check device connection |
+| `GET` | `/api/cbs/config` | Get CBS config for all ports |
+| `POST` | `/api/cbs/set` | Set CBS on ports |
+| `POST` | `/api/cbs/delete` | Delete CBS config |
 
-## API Examples
+### API Examples
 
-### Set CBS
+<details>
+<summary><b>Set CBS Configuration</b></summary>
+
 ```bash
 curl -X POST http://localhost:3000/api/cbs/set \
   -H "Content-Type: application/json" \
   -d '{"ports": [8,9,10,11], "tc": 0, "idleSlope": 100000}'
 ```
+</details>
 
-### Delete CBS
+<details>
+<summary><b>Delete CBS Configuration</b></summary>
+
 ```bash
 curl -X POST http://localhost:3000/api/cbs/delete \
   -H "Content-Type: application/json" \
   -d '{"port": 8, "tc": 0}'
 ```
+</details>
 
-### Get Status
+<details>
+<summary><b>Get Streaming Status</b></summary>
+
 ```bash
 curl http://localhost:3000/api/status
-# {"broadcasting":true,"viewers":2}
+# Response: {"broadcasting":true,"viewers":2}
 ```
+</details>
 
-## Technical Details
+---
 
-### MJPEG Streaming
-- Protocol: `multipart/x-mixed-replace` HTTP streaming
-- Frame capture: Browser Canvas API + `toBlob()`
-- Transfer: Socket.IO binary (primary) or HTTP POST (fallback)
-- Viewer delivery: Non-blocking async writes
+## ⚙️ CBS Configuration
 
-### CBS (Credit Based Shaper)
-- Standard: IEEE 802.1Qav
-- Function: Controls bandwidth allocation per traffic class
-- Idle Slope: Rate of credit accumulation (kbps)
-- CLI: VelocityDRIVE CT CLI with YANG data model
+### Prerequisites
+
+1. **Download VelocityDRIVE CT CLI:**
+   ```bash
+   wget http://mscc-ent-open-source.s3-website-eu-west-1.amazonaws.com/public_root/velocitydrivect/2025.06/Microchip_VelocityDRIVE_CT-CLI-linux-2025.07.12.tgz
+   tar -xzf Microchip_VelocityDRIVE_CT-CLI-linux-2025.07.12.tgz
+   ```
+
+2. **Update CLI path in `server.js`:**
+   ```javascript
+   const CBS_CLI_PATH = '/path/to/mvdct.cli';
+   const CBS_DEVICE = '/dev/ttyACM0';
+   ```
+
+3. **Add user to dialout group:**
+   ```bash
+   sudo usermod -aG dialout $USER
+   # Logout and login again
+   ```
+
+### Quick Presets
+
+| Preset | Ports | TC | Bandwidth |
+|--------|:-----:|:--:|:---------:|
+| **P8-11 TC0 100M** | 8-11 | TC0 | 100 Mbps |
+| **P1-4 TC0 50M** | 1-4 | TC0 | 50 Mbps |
+| **ALL TC0 100M** | 1-12 | TC0 | 100 Mbps |
+
+---
+
+## 🔧 Technical Details
 
 ### Latency Optimization
+
 | Technique | Purpose |
 |-----------|---------|
 | Frame dropping | Prevent queue buildup |
@@ -212,34 +220,49 @@ curl http://localhost:3000/api/status
 | Binary transfer | 33% less overhead vs base64 |
 | `toBlob()` async | Non-blocking JPEG encoding |
 
-## Troubleshooting
+### Key Technologies
 
-### High Latency (>1 second)
+- **TSN Standards:** IEEE 802.1Qav (CBS), IEEE 1588 (PTP)
+- **Protocols:** MJPEG over HTTP, Socket.IO (WebSocket)
+- **Backend:** Node.js, Express
+- **Frontend:** Vanilla JavaScript, Canvas API
+
+---
+
+## 🐛 Troubleshooting
+
+<details>
+<summary><b>High Latency (>1 second)</b></summary>
+
 - Use "Low Latency" or "Old Mac" preset
 - Check network bandwidth
 - Reduce resolution/FPS/quality
+</details>
 
-### Viewer Freezing
+<details>
+<summary><b>Viewer Freezing</b></summary>
+
 - Check if CBS is limiting bandwidth too much
 - Verify network connectivity
 - Check "Frames Dropped" counter
+</details>
 
-### CBS Not Working
-- Verify device connection: `ls -la /dev/ttyACM0`
-- Check user permissions: `groups $USER`
-- Test CLI manually: `./mvdct.cli device /dev/ttyACM0 type`
+<details>
+<summary><b>CBS Not Working</b></summary>
 
-## Performance Tips
+- Verify device: `ls -la /dev/ttyACM0`
+- Check permissions: `groups $USER`
+- Test CLI: `./mvdct.cli device /dev/ttyACM0 type`
+</details>
 
-1. **For lowest latency**: Use 480p, 15fps, Low quality
-2. **For old devices**: Use 240p, 10fps, Very Low quality
-3. **Monitor dropped frames**: Some drops are normal, excessive drops indicate network/CPU issues
-4. **CBS testing**: Start with high idle-slope, gradually reduce to find limit
+---
 
-## License
+## 📝 License
 
-MIT
+MIT License - feel free to use this project for any purpose.
 
-## Contributing
+---
 
-Pull requests welcome. For major changes, please open an issue first.
+<p align="center">
+  <sub>Made with ❤️ for TSN/QoS Research</sub>
+</p>
