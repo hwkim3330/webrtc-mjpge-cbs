@@ -8,7 +8,22 @@ const execPromise = util.promisify(exec);
 
 // CBS CLI Configuration
 const CBS_CLI_PATH = '/home/keti/Microchip_VelocityDRIVE_CT-CLI-linux-2025.07.12/mvdct.cli';
-const CBS_DEVICE = '/dev/ttyACM0';
+let CBS_DEVICE = '/dev/ttyACM0'; // 동적으로 변경 가능
+
+// CBS 디바이스 자동 감지
+const fs = require('fs');
+function detectCbsDevice() {
+  const devices = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyACM2'];
+  for (const dev of devices) {
+    if (fs.existsSync(dev)) {
+      CBS_DEVICE = dev;
+      console.log(`CBS device found: ${dev}`);
+      return dev;
+    }
+  }
+  console.log('No CBS device found');
+  return null;
+}
 
 // CLI Lock to prevent concurrent access
 let cliLock = false;
@@ -75,6 +90,7 @@ app.get('/cbs', (req, res) => {
 });
 
 // MJPEG 스트림 엔드포인트 (img 태그로 직접 시청 가능)
+let viewerIdCounter = 0;
 app.get('/stream.mjpg', (req, res) => {
   res.writeHead(200, {
     'Content-Type': 'multipart/x-mixed-replace; boundary=frame',
@@ -85,15 +101,16 @@ app.get('/stream.mjpg', (req, res) => {
 
   const viewer = {
     res,
-    id: Date.now()
+    id: ++viewerIdCounter,  // 고유 ID 보장
+    droppedFrames: 0
   };
   viewers.push(viewer);
-  console.log(`시청자 연결: ${viewers.length}명`);
+  console.log(`시청자 연결: ${viewers.length}명 (ID: ${viewer.id})`);
 
   // 연결 종료 처리
   req.on('close', () => {
     viewers = viewers.filter(v => v.id !== viewer.id);
-    console.log(`시청자 연결 해제: ${viewers.length}명`);
+    console.log(`시청자 연결 해제: ${viewers.length}명 (ID: ${viewer.id})`);
   });
 });
 
@@ -124,13 +141,13 @@ function broadcastFrame(frameBuffer, timestamp) {
 
   // 타임스탬프와 함께 시청자에게 브로드캐스트
   io.emit('frame-stats', {
-    timestamp: serverReceiveTime,
-    latency: serverStats.latency,
+    serverSendTime: Date.now(),           // 서버가 보내는 시각 (뷰어에서 RTT 계산용)
+    broadcasterLatency: serverStats.latency, // 송출자→서버 레이턴시
     frameSize: serverStats.frameSize,
     fps: serverStats.fps
   });
 
-  // 모든 시청자에게 프레임 전송 (MJPEG) - 비블로킹!
+  // 모든 시청자에게 프레임 전송 (MJPEG)
   const boundary = '--frame\r\n';
   const header = 'Content-Type: image/jpeg\r\n\r\n';
   const footer = '\r\n';
@@ -140,27 +157,34 @@ function broadcastFrame(frameBuffer, timestamp) {
     Buffer.from(footer)
   ]);
 
-  viewers.forEach(viewer => {
-    // 각 뷰어 독립적으로 처리 - 느린 뷰어는 스킵
+  // 각 뷰어에게 독립적으로 전송
+  for (let i = viewers.length - 1; i >= 0; i--) {
+    const viewer = viewers[i];
     try {
-      // writableNeedDrain이 true면 버퍼 꽉 참 - 스킵
-      if (viewer.res.writableNeedDrain) {
-        viewer.droppedFrames = (viewer.droppedFrames || 0) + 1;
-        return;  // 이 뷰어 스킵, 다음 뷰어로
+      // 연결이 끊겼는지 확인
+      if (!viewer.res || viewer.res.destroyed || viewer.res.writableEnded) {
+        console.log(`뷰어 ${viewer.id} 연결 끊김 - 제거`);
+        viewers.splice(i, 1);
+        continue;
       }
 
-      // 비동기 write (콜백 무시 - fire and forget)
-      viewer.res.write(frameData, (err) => {
-        if (err) {
-          // 에러시 뷰어 제거
-          viewers = viewers.filter(v => v.id !== viewer.id);
+      // 동기적으로 write (MJPEG는 순차 전송 필요)
+      const canWrite = viewer.res.write(frameData);
+      if (!canWrite) {
+        // 버퍼가 차면 drain 이벤트 대기 (한번만 등록)
+        if (!viewer.drainRegistered) {
+          viewer.drainRegistered = true;
+          viewer.res.once('drain', () => {
+            viewer.drainRegistered = false;
+          });
         }
-      });
+        viewer.droppedFrames = (viewer.droppedFrames || 0) + 1;
+      }
     } catch (e) {
-      // 연결 끊긴 시청자 제거
-      viewers = viewers.filter(v => v.id !== viewer.id);
+      console.log(`뷰어 ${viewer.id} 에러: ${e.message} - 제거`);
+      viewers.splice(i, 1);
     }
-  });
+  }
 }
 
 app.post('/frame', (req, res) => {
@@ -195,6 +219,14 @@ io.on('connection', (socket) => {
     socket.emit('broadcaster-status', broadcasterSocket !== null);
   });
 
+  // RTT 측정용 ping-pong
+  socket.on('ping-measure', (data) => {
+    socket.emit('pong-measure', {
+      clientTime: data.clientTime,
+      serverTime: Date.now()
+    });
+  });
+
   // Socket.IO 바이너리 프레임 수신 (저지연)
   socket.on('frame', (data) => {
     if (socket.id !== broadcasterSocket) return;
@@ -227,12 +259,36 @@ app.get('/api/status', (req, res) => {
   });
 });
 
+// 단일 프레임 엔드포인트 (Safari/맥북 fallback용)
+app.get('/frame.jpg', (req, res) => {
+  if (latestFrame) {
+    res.writeHead(200, {
+      'Content-Type': 'image/jpeg',
+      'Content-Length': latestFrame.length,
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
+    res.end(latestFrame);
+  } else {
+    res.status(404).send('No frame');
+  }
+});
+
 // ============================================
 // CBS (Credit Based Shaper) API
 // ============================================
 
 // Helper: Run CLI command with lock
 async function runCbsCli(args) {
+  // 디바이스가 없으면 먼저 감지 시도
+  if (!fs.existsSync(CBS_DEVICE)) {
+    const detected = detectCbsDevice();
+    if (!detected) {
+      return { success: false, error: 'No CBS device connected' };
+    }
+  }
+
   return withCliLock(async () => {
     const cmd = `${CBS_CLI_PATH} device ${CBS_DEVICE} ${args}`;
     try {
@@ -323,12 +379,12 @@ app.post('/api/cbs/delete', async (req, res) => {
   res.json({ success: result.success, error: result.error, cmd, cliOutput: result.output || result.stderr });
 });
 
-// 로컬 IP 주소 가져오기
+// 192.168.1.x 대역 IP만 가져오기
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal) {
+      if (iface.family === 'IPv4' && !iface.internal && iface.address.startsWith('192.168.')) {
         return iface.address;
       }
     }
@@ -346,5 +402,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  Watch:      http://${localIP}:${PORT}/watch`);
   console.log(`  CBS:        http://localhost:${PORT}/cbs`);
   console.log(`  Stream:     http://${localIP}:${PORT}/stream.mjpg`);
+  console.log(`  Frame:      http://${localIP}:${PORT}/frame.jpg`);
   console.log('\n');
 });

@@ -93,21 +93,21 @@
     .status.connected { background: rgba(52,199,89,0.1); color: #34c759; }
     .charts-grid {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 16px;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
     }
     .chart-box {
       background: #f5f5f7;
       border-radius: 12px;
-      padding: 14px;
+      padding: 12px;
     }
     .chart-box h3 {
-      font-size: 0.75rem;
+      font-size: 0.7rem;
       color: #86868b;
-      margin-bottom: 8px;
+      margin-bottom: 6px;
       font-weight: 500;
     }
-    .chart-wrapper { height: 100px; }
+    .chart-wrapper { height: 80px; }
     .stat-row {
       display: flex;
       justify-content: space-between;
@@ -118,6 +118,9 @@
     .stat-row:last-child { border-bottom: none; }
     .stat-label { color: #86868b; }
     .stat-value { font-weight: 600; color: #0071e3; }
+    .stat-value.warning { color: #ff9500; }
+    .stat-value.danger { color: #ff3b30; }
+    .stat-value.good { color: #34c759; }
     .direct-url {
       margin-top: 16px;
       padding: 12px;
@@ -149,7 +152,7 @@
     <div class="panel">
       <h2>Live Stream</h2>
       <div class="stream-container">
-        <img id="streamImg" src="/stream.mjpg" alt="Stream" style="display:none;">
+        <img id="streamImg" alt="Stream" style="display:none;">
         <div id="noStream" class="no-stream">
           <svg viewBox="0 0 24 24" fill="currentColor">
             <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
@@ -180,6 +183,14 @@
           <div class="chart-wrapper"><canvas id="latencyChart"></canvas></div>
         </div>
         <div class="chart-box">
+          <h3>RTT (ms)</h3>
+          <div class="chart-wrapper"><canvas id="rttChart"></canvas></div>
+        </div>
+        <div class="chart-box">
+          <h3>Packet Loss (%)</h3>
+          <div class="chart-wrapper"><canvas id="lossChart"></canvas></div>
+        </div>
+        <div class="chart-box">
           <h3>Frame Size (KB)</h3>
           <div class="chart-wrapper"><canvas id="frameSizeChart"></canvas></div>
         </div>
@@ -188,6 +199,8 @@
         <div class="stat-row"><span class="stat-label">Current Bitrate</span><span class="stat-value" id="bitrate">-</span></div>
         <div class="stat-row"><span class="stat-label">Current FPS</span><span class="stat-value" id="fps">-</span></div>
         <div class="stat-row"><span class="stat-label">Current Latency</span><span class="stat-value" id="latency">-</span></div>
+        <div class="stat-row"><span class="stat-label">Network RTT</span><span class="stat-value" id="rtt">-</span></div>
+        <div class="stat-row"><span class="stat-label">Packet Loss</span><span class="stat-value" id="packetLoss">0%</span></div>
         <div class="stat-row"><span class="stat-label">Frame Size</span><span class="stat-value" id="frameSize">-</span></div>
         <div class="stat-row"><span class="stat-label">Frames Received</span><span class="stat-value" id="framesReceived">-</span></div>
         <div class="stat-row"><span class="stat-label">Total Received</span><span class="stat-value" id="bytesReceived">-</span></div>
@@ -205,7 +218,7 @@
     document.getElementById('streamUrl').textContent = location.origin + '/stream.mjpg';
 
     const MAX_POINTS = 60;
-    const statsData = { bitrate: [], fps: [], latency: [], frameSize: [], labels: [] };
+    const statsData = { bitrate: [], fps: [], latency: [], rtt: [], loss: [], frameSize: [], labels: [] };
 
     const chartOpts = {
       responsive: true,
@@ -213,7 +226,7 @@
       animation: { duration: 0 },
       scales: {
         x: { display: false },
-        y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { font: { size: 9 }, color: '#86868b' } }
+        y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { font: { size: 8 }, color: '#86868b' } }
       },
       plugins: { legend: { display: false } },
       elements: { point: { radius: 0 }, line: { tension: 0.3, borderWidth: 2 } }
@@ -231,64 +244,166 @@
       bitrate: makeChart('bitrateChart', '#0071e3'),
       fps: makeChart('fpsChart', '#34c759'),
       latency: makeChart('latencyChart', '#ff9500'),
+      rtt: makeChart('rttChart', '#5856d6'),
+      loss: makeChart('lossChart', '#ff3b30'),
       frameSize: makeChart('frameSizeChart', '#af52de')
     };
 
     function updateCharts() {
       Object.keys(charts).forEach(key => {
-        charts[key].data.labels = statsData.labels;
-        charts[key].data.datasets[0].data = statsData[key];
-        charts[key].update('none');
+        if (statsData[key]) {
+          charts[key].data.labels = statsData.labels;
+          charts[key].data.datasets[0].data = statsData[key];
+          charts[key].update('none');
+        }
       });
     }
 
+    // 변수 먼저 선언
+    let lastFrameTime = Date.now();
+    let pollingMode = false;
+    let pollingInterval = null;
+    let mjpegFailCount = 0;
+    let streamStarted = false;
+
     socket.emit('viewer');
 
+    // 페이지 로드 후 3초 안에 스트림 안 시작되면 강제 시작
+    setTimeout(() => {
+      if (!streamStarted) {
+        console.log('Force starting stream...');
+        startStream();
+      }
+    }, 3000);
+
+    // RTT 측정
+    let serverRtt = 0;
+    let clockOffset = 0; // 서버와 클라이언트 시계 차이
+
+    function measureRtt() {
+      const startTime = Date.now();
+      socket.emit('ping-measure', { clientTime: startTime });
+    }
+
+    socket.on('pong-measure', (data) => {
+      const now = Date.now();
+      serverRtt = now - data.clientTime;
+      // 서버 시계와 클라이언트 시계 차이 추정 (NTP 방식)
+      clockOffset = data.serverTime - data.clientTime - (serverRtt / 2);
+
+      // RTT 표시 및 색상
+      const rttEl = document.getElementById('rtt');
+      rttEl.textContent = serverRtt + ' ms';
+      rttEl.classList.remove('good', 'warning', 'danger');
+      if (serverRtt <= 20) rttEl.classList.add('good');
+      else if (serverRtt <= 50) rttEl.classList.add('warning');
+      else rttEl.classList.add('danger');
+
+      // RTT 차트 데이터 추가
+      statsData.rtt.push(serverRtt);
+      if (statsData.rtt.length > MAX_POINTS) statsData.rtt.shift();
+    });
+
+    // 1초마다 RTT 측정
+    setInterval(measureRtt, 1000);
+    measureRtt(); // 초기 측정
+
     socket.on('broadcaster-status', (broadcasting) => {
+      console.log('broadcaster-status:', broadcasting);
       if (broadcasting) {
-        streamImg.style.display = 'block';
-        noStreamEl.style.display = 'none';
-        statusEl.textContent = 'Connected';
-        statusEl.className = 'status connected';
+        // 스트림 시작
+        startStream();
       } else {
-        streamImg.style.display = 'none';
-        noStreamEl.style.display = 'flex';
-        statusEl.textContent = 'Waiting';
-        statusEl.className = 'status waiting';
+        stopStream();
       }
     });
 
-    let lastFrameTime = Date.now();
-    let reconnectTimer = null;
+    // 연결되면 바로 상태 다시 요청
+    socket.on('connect', () => {
+      console.log('Socket connected, requesting status...');
+      socket.emit('viewer');
+    });
 
-    streamImg.onload = () => {
-      noStreamEl.style.display = 'none';
+    // Polling 모드 (Safari/맥북 fallback) - 변수는 위에서 선언됨
+
+    function startStream() {
+      streamStarted = true;
+      console.log('startStream called, pollingMode:', pollingMode);
+
+      if (pollingMode) {
+        startPolling();
+      } else {
+        // MJPEG 모드 시도
+        const url = '/stream.mjpg?' + Date.now();
+        console.log('Loading MJPEG:', url);
+        streamImg.src = url;
+      }
       streamImg.style.display = 'block';
+      noStreamEl.style.display = 'none';
       statusEl.textContent = 'Connected';
       statusEl.className = 'status connected';
       lastFrameTime = Date.now();
+    }
+
+    function startPolling() {
+      if (pollingInterval) clearInterval(pollingInterval);
+      console.log('Polling mode activated');
+      statusEl.textContent = 'Connected (Polling)';
+
+      function fetchFrame() {
+        streamImg.src = '/frame.jpg?' + Date.now();
+      }
+      fetchFrame();
+      pollingInterval = setInterval(fetchFrame, 66); // ~15fps
+    }
+
+    function stopStream() {
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
+        pollingInterval = null;
+      }
+      streamImg.src = '';
+      streamImg.style.display = 'none';
+      noStreamEl.style.display = 'flex';
+      statusEl.textContent = 'Waiting';
+      statusEl.className = 'status waiting';
+    }
+
+    let reconnectTimer = null;
+
+    streamImg.onload = () => {
+      lastFrameTime = Date.now();
+      mjpegFailCount = 0; // 성공하면 리셋
     };
 
     streamImg.onerror = () => {
-      console.log('Stream error, reconnecting...');
-      setTimeout(() => { streamImg.src = '/stream.mjpg?' + Date.now(); }, 1000);
+      mjpegFailCount++;
+      console.log('Stream error, count:', mjpegFailCount);
+
+      // MJPEG 3번 실패하면 polling 모드로 전환
+      if (!pollingMode && mjpegFailCount >= 3) {
+        console.log('Switching to polling mode');
+        pollingMode = true;
+        startPolling();
+        return;
+      }
+
+      statusEl.textContent = 'Reconnecting...';
+      statusEl.className = 'status waiting';
+      setTimeout(() => {
+        startStream();
+      }, 1000);
     };
 
-    // 프레임 수신 시 타임스탬프 갱신
-    socket.on('frame-stats', () => {
-      lastFrameTime = Date.now();
-    });
-
-    // 5초 동안 프레임 없으면 자동 재연결
+    // 5초 동안 프레임 없으면 polling 모드 시도
     setInterval(() => {
       const elapsed = Date.now() - lastFrameTime;
-      if (elapsed > 5000 && streamImg.style.display === 'block') {
-        console.log('No frames for 5s, reconnecting...');
-        statusEl.textContent = 'Reconnecting...';
-        statusEl.className = 'status waiting';
-        streamImg.src = '/stream.mjpg?' + Date.now();
+      if (elapsed > 5000 && streamImg.style.display === 'block' && !pollingMode) {
+        console.log('No frames for 5s, switching to polling mode...');
+        pollingMode = true;
+        startPolling();
       }
-    }, 2000);
+    }, 3000);
 
     let totalFrames = 0;
     let totalBytes = 0;
@@ -297,47 +412,156 @@
     let lastSocketTime = Date.now();
     let socketLatency = 0;
 
+    // 비트레이트 계산용
+    let bitrateBytes = 0;
+    let lastBitrateTime = Date.now();
+    let currentBitrate = 0;
+
+    // Packet loss tracking
+    let expectedFps = 15; // 기본값, broadcaster에서 받아옴
+    let packetLossWindow = [];
+    const LOSS_WINDOW_SIZE = 5; // 5초 윈도우
+    let lastExpectedFrames = 0;
+    let lastReceivedFrames = 0;
+    let lossCheckInterval = null;
+
+    // 상태에 따른 색상 업데이트 함수
+    function updateStatusColor(elementId, value, thresholds) {
+      const el = document.getElementById(elementId);
+      el.classList.remove('good', 'warning', 'danger');
+      if (value <= thresholds.good) {
+        el.classList.add('good');
+      } else if (value <= thresholds.warning) {
+        el.classList.add('warning');
+      } else {
+        el.classList.add('danger');
+      }
+    }
+
+    function updateFpsStatusColor(elementId, value, targetFps) {
+      const el = document.getElementById(elementId);
+      el.classList.remove('good', 'warning', 'danger');
+      const ratio = value / targetFps;
+      if (ratio >= 0.9) {
+        el.classList.add('good');
+      } else if (ratio >= 0.7) {
+        el.classList.add('warning');
+      } else {
+        el.classList.add('danger');
+      }
+    }
+
+    // 차트 색상 동적 업데이트
+    function updateChartColor(chart, value, thresholds, invertColors = false) {
+      let color;
+      if (invertColors) {
+        // 낮을수록 좋음 (latency, loss)
+        if (value <= thresholds.good) color = '#34c759';
+        else if (value <= thresholds.warning) color = '#ff9500';
+        else color = '#ff3b30';
+      } else {
+        // 높을수록 좋음 (fps)
+        if (value >= thresholds.good) color = '#34c759';
+        else if (value >= thresholds.warning) color = '#ff9500';
+        else color = '#ff3b30';
+      }
+      chart.data.datasets[0].borderColor = color;
+      chart.data.datasets[0].backgroundColor = color + '20';
+    }
+
+    // 패킷 로스 계산용
+    let frameSequence = 0;
+    let lostFrames = 0;
+    let lastReportedFps = 0;
+    let fpsHistory = [];
+
     socket.on('frame-stats', (data) => {
       const now = Date.now();
-      // Socket message interval (approximates real-time delivery)
       const interval = now - lastSocketTime;
       lastSocketTime = now;
+      lastFrameTime = now; // 프레임 수신 시간 업데이트 (자동 재연결용)
 
-      // Use broadcaster->server latency directly (most accurate)
-      // This is measured on same machine, no clock sync issues
-      const displayLatency = data.latency;
+      // 정확한 레이턴시 계산:
+      // 1. 송출자→서버 레이턴시 (broadcasterLatency): 서버에서 측정
+      // 2. 서버→뷰어 레이턴시: (now - serverSendTime) 또는 RTT/2로 추정
+      const serverToViewerLatency = serverRtt > 0 ? Math.round(serverRtt / 2) : 0;
+      const totalLatency = data.broadcasterLatency + serverToViewerLatency;
 
       totalFrames++;
       totalBytes += data.frameSize;
+      bitrateBytes += data.frameSize;
 
-      document.getElementById('fps').textContent = data.fps + ' fps';
-      document.getElementById('latency').textContent = displayLatency + ' ms';
+      // 1초마다 비트레이트 계산
+      const bitrateElapsed = (now - lastBitrateTime) / 1000;
+      if (bitrateElapsed >= 1) {
+        currentBitrate = (bitrateBytes * 8) / bitrateElapsed / 1000000; // Mbps
+        document.getElementById('bitrate').textContent = currentBitrate.toFixed(2) + ' Mbps';
+        statsData.bitrate.push(currentBitrate);
+        if (statsData.bitrate.length > MAX_POINTS) statsData.bitrate.shift();
+        bitrateBytes = 0;
+        lastBitrateTime = now;
+      }
+
+      // FPS 기록 및 패킷 로스 계산
+      fpsHistory.push(data.fps);
+      if (fpsHistory.length > 5) fpsHistory.shift();
+      const avgFps = fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length;
+
+      // 예상 FPS 대비 실제 FPS로 패킷 로스 추정
+      const lossRate = expectedFps > 0 ? Math.max(0, (1 - avgFps / expectedFps) * 100) : 0;
+
+      // FPS 업데이트 및 색상
+      const fpsEl = document.getElementById('fps');
+      fpsEl.textContent = data.fps.toFixed(1) + ' fps';
+      updateFpsStatusColor('fps', data.fps, expectedFps);
+
+      // Latency 업데이트 및 색상 (50ms 이하: 좋음, 100ms 이하: 경고, 그 이상: 위험)
+      const latencyEl = document.getElementById('latency');
+      latencyEl.textContent = totalLatency + ' ms';
+      updateStatusColor('latency', totalLatency, { good: 50, warning: 100 });
+
+      // 패킷 로스 표시
+      const lossEl = document.getElementById('packetLoss');
+      lossEl.textContent = lossRate.toFixed(1) + '%';
+      updateStatusColor('packetLoss', lossRate, { good: 5, warning: 15 });
+
       document.getElementById('frameSize').textContent = (data.frameSize / 1024).toFixed(1) + ' KB';
       document.getElementById('framesReceived').textContent = totalFrames.toLocaleString();
       document.getElementById('bytesReceived').textContent = formatBytes(totalBytes);
 
-      statsData.latency.push(displayLatency);
+      // labels도 함께 추가 (broadcast-stats가 없을 때 대비)
+      if (statsData.labels.length < statsData.latency.length + 1) {
+        statsData.labels.push('');
+      }
+
+      statsData.latency.push(totalLatency);
       statsData.fps.push(data.fps);
       statsData.frameSize.push(data.frameSize / 1024);
+      statsData.loss.push(lossRate);
+
+      // 차트 색상 업데이트
+      updateChartColor(charts.latency, totalLatency, { good: 50, warning: 100 }, true);
+      updateChartColor(charts.fps, data.fps, { good: expectedFps * 0.9, warning: expectedFps * 0.7 }, false);
+      updateChartColor(charts.loss, lossRate, { good: 5, warning: 15 }, true);
+      updateChartColor(charts.rtt, serverRtt, { good: 20, warning: 50 }, true);
 
       if (statsData.latency.length > MAX_POINTS) {
+        statsData.labels.shift();
         statsData.latency.shift();
         statsData.fps.shift();
         statsData.frameSize.shift();
+        statsData.loss.shift();
       }
+
+      updateCharts();
     });
 
-    // Bitrate from broadcaster
+    // Bitrate from broadcaster (FPS 정보만 사용)
     socket.on('broadcast-stats', (data) => {
-      document.getElementById('bitrate').textContent = (data.bitrate / 1000000).toFixed(2) + ' Mbps';
-      statsData.labels.push('');
-      statsData.bitrate.push(data.bitrate / 1000000);
-
-      if (statsData.labels.length > MAX_POINTS) {
-        statsData.labels.shift();
-        statsData.bitrate.shift();
+      // 송출자의 실제 FPS로 예상 FPS 업데이트
+      if (data.fps && data.fps > 0) {
+        expectedFps = Math.round(data.fps);
       }
-      updateCharts();
     });
 
     function formatBytes(b) {
