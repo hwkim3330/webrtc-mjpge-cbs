@@ -187,7 +187,7 @@
           <div class="chart-wrapper"><canvas id="rttChart"></canvas></div>
         </div>
         <div class="chart-box">
-          <h3>Packet Loss (%)</h3>
+          <h3>Dropped Frames</h3>
           <div class="chart-wrapper"><canvas id="lossChart"></canvas></div>
         </div>
         <div class="chart-box">
@@ -201,8 +201,7 @@
         <div class="stat-row"><span class="stat-label">E2E Latency</span><span class="stat-value" id="latency">-</span></div>
         <div class="stat-row"><span class="stat-label">Network RTT</span><span class="stat-value" id="rtt">-</span></div>
         <div class="stat-row"><span class="stat-label">Packet Loss</span><span class="stat-value" id="packetLoss">0%</span></div>
-        <div class="stat-row"><span class="stat-label">Frames Lost</span><span class="stat-value" id="framesLost">0</span></div>
-        <div class="stat-row"><span class="stat-label">Server Dropped</span><span class="stat-value" id="serverDropped">0</span></div>
+        <div class="stat-row"><span class="stat-label">Frames Dropped</span><span class="stat-value" id="framesLost">0</span></div>
         <div class="stat-row"><span class="stat-label">Frame Size</span><span class="stat-value" id="frameSize">-</span></div>
         <div class="stat-row"><span class="stat-label">Frames Received</span><span class="stat-value" id="framesReceived">-</span></div>
         <div class="stat-row"><span class="stat-label">Total Received</span><span class="stat-value" id="bytesReceived">-</span></div>
@@ -267,8 +266,22 @@
     let pollingInterval = null;
     let mjpegFailCount = 0;
     let streamStarted = false;
+    let myViewerId = null;  // 서버에서 할당받은 뷰어 ID
 
     socket.emit('viewer');
+
+    // 서버에서 뷰어 ID 수신
+    socket.on('viewer-id', (id) => {
+      myViewerId = id;
+      console.log('Received viewer ID:', myViewerId);
+      // 이미 스트림 시작했으면 재연결
+      if (streamStarted && !pollingMode) {
+        const url = '/stream.mjpg?id=' + myViewerId + '&t=' + Date.now();
+        streamImg.src = url;
+        // MJPEG 연결 알림
+        socket.emit('mjpeg-connected', { viewerId: myViewerId });
+      }
+    });
 
     // 페이지 로드 후 3초 안에 스트림 안 시작되면 강제 시작
     setTimeout(() => {
@@ -330,13 +343,13 @@
 
     function startStream() {
       streamStarted = true;
-      console.log('startStream called, pollingMode:', pollingMode);
+      console.log('startStream called, pollingMode:', pollingMode, 'viewerId:', myViewerId);
 
       if (pollingMode) {
         startPolling();
       } else {
-        // MJPEG 모드 시도
-        const url = '/stream.mjpg?' + Date.now();
+        // MJPEG 모드 시도 (viewerId 포함)
+        const url = '/stream.mjpg?id=' + (myViewerId || '') + '&t=' + Date.now();
         console.log('Loading MJPEG:', url);
         streamImg.src = url;
       }
@@ -376,6 +389,10 @@
     streamImg.onload = () => {
       lastFrameTime = Date.now();
       mjpegFailCount = 0; // 성공하면 리셋
+      // MJPEG 연결 성공 시 서버에 알림
+      if (myViewerId && !pollingMode) {
+        socket.emit('mjpeg-connected', { viewerId: myViewerId });
+      }
     };
 
     streamImg.onerror = () => {
@@ -466,38 +483,37 @@
       chart.data.datasets[0].backgroundColor = color + '20';
     }
 
-    // 패킷 로스 계산용 (시퀀스 기반)
-    let lastSeq = 0;
-    let totalLostFrames = 0;
-    let totalReceivedFrames = 0;
+    // 패킷 로스 계산용 (서버에서 받은 myDropped/mySent 사용)
+    let myDropped = 0;
+    let mySent = 0;
+    let lastMyDropped = 0;
     let lossHistory = [];
     const LOSS_HISTORY_SIZE = 10; // 최근 10개 샘플 평균
 
+    // 개별 뷰어 stats 수신 (MJPEG 연결 후)
     socket.on('frame-stats', (data) => {
       const now = Date.now();
       const interval = now - lastSocketTime;
       lastSocketTime = now;
       lastFrameTime = now; // 프레임 수신 시간 업데이트 (자동 재연결용)
 
-      // 시퀀스 기반 패킷 로스 계산
-      let lossRate = 0;
-      if (lastSeq > 0 && data.seq > lastSeq) {
-        const expected = data.seq - lastSeq;
-        const lost = expected - 1; // 현재 프레임 제외
-        if (lost > 0) {
-          totalLostFrames += lost;
-        }
-        totalReceivedFrames++;
-
-        // 이번 구간 로스율 (%)
-        const intervalLoss = expected > 0 ? (lost / expected) * 100 : 0;
-        lossHistory.push(intervalLoss);
-        if (lossHistory.length > LOSS_HISTORY_SIZE) lossHistory.shift();
-
-        // 최근 평균 로스율
-        lossRate = lossHistory.reduce((a, b) => a + b, 0) / lossHistory.length;
+      // 서버에서 보낸 개별 드랍/전송 정보 사용
+      if (data.myDropped !== undefined) {
+        myDropped = data.myDropped;
+        mySent = data.mySent || 0;
       }
-      lastSeq = data.seq;
+
+      // 이번 구간 드랍 수
+      const droppedThisCycle = myDropped - lastMyDropped;
+      lastMyDropped = myDropped;
+
+      // 로스율 계산 (드랍 / (드랍 + 전송))
+      const totalAttempted = myDropped + mySent;
+      let lossRate = totalAttempted > 0 ? (myDropped / totalAttempted) * 100 : 0;
+
+      // 최근 드랍 기록 (그래프용)
+      lossHistory.push(droppedThisCycle);
+      if (lossHistory.length > LOSS_HISTORY_SIZE) lossHistory.shift();
 
       // 정확한 레이턴시 계산:
       // 1. 송출자→서버 레이턴시 (broadcasterLatency): 서버에서 측정
@@ -536,10 +552,9 @@
       updateStatusColor('packetLoss', lossRate, { good: 5, warning: 15 });
 
       document.getElementById('frameSize').textContent = (data.frameSize / 1024).toFixed(1) + ' KB';
-      document.getElementById('framesReceived').textContent = totalFrames.toLocaleString();
+      document.getElementById('framesReceived').textContent = mySent.toLocaleString();
       document.getElementById('bytesReceived').textContent = formatBytes(totalBytes);
-      document.getElementById('framesLost').textContent = totalLostFrames.toLocaleString();
-      document.getElementById('serverDropped').textContent = (data.totalDropped || 0).toLocaleString();
+      document.getElementById('framesLost').textContent = myDropped.toLocaleString();
 
       // labels도 함께 추가 (broadcast-stats가 없을 때 대비)
       if (statsData.labels.length < statsData.latency.length + 1) {
@@ -549,12 +564,14 @@
       statsData.latency.push(totalLatency);
       statsData.fps.push(data.fps);
       statsData.frameSize.push(data.frameSize / 1024);
-      statsData.loss.push(lossRate);
+      // 로스 그래프: 이번 구간 드랍 수 표시 (더 직관적)
+      const recentDrops = lossHistory.reduce((a, b) => a + b, 0);
+      statsData.loss.push(droppedThisCycle);
 
       // 차트 색상 업데이트
       updateChartColor(charts.latency, totalLatency, { good: 50, warning: 100 }, true);
       updateChartColor(charts.fps, data.fps, { good: expectedFps * 0.9, warning: expectedFps * 0.7 }, false);
-      updateChartColor(charts.loss, lossRate, { good: 5, warning: 15 }, true);
+      updateChartColor(charts.loss, droppedThisCycle, { good: 0, warning: 1 }, true); // 0이면 초록, 1이상이면 빨강
       updateChartColor(charts.rtt, serverRtt, { good: 20, warning: 50 }, true);
 
       if (statsData.latency.length > MAX_POINTS) {
@@ -573,6 +590,21 @@
       // 송출자의 실제 FPS로 예상 FPS 업데이트
       if (data.fps && data.fps > 0) {
         expectedFps = Math.round(data.fps);
+      }
+    });
+
+    // Global stats (MJPEG 연결 전 또는 폴링 모드용)
+    socket.on('frame-stats-global', (data) => {
+      // 개별 stats를 받지 못한 경우에만 사용
+      if (myDropped === 0 && mySent === 0) {
+        lastFrameTime = Date.now();
+        // 기본 정보만 업데이트
+        if (data.fps) {
+          document.getElementById('fps').textContent = data.fps.toFixed(1) + ' fps';
+        }
+        if (data.frameSize) {
+          document.getElementById('frameSize').textContent = (data.frameSize / 1024).toFixed(1) + ' KB';
+        }
       }
     });
 

@@ -91,7 +91,13 @@ app.get('/cbs', (req, res) => {
 
 // MJPEG 스트림 엔드포인트 (img 태그로 직접 시청 가능)
 let viewerIdCounter = 0;
+// Socket.IO 클라이언트와 MJPEG 뷰어 매핑
+const socketToViewer = new Map(); // socketId -> viewerId
+
 app.get('/stream.mjpg', (req, res) => {
+  // URL에서 viewerId 파라미터 확인 (Socket.IO에서 등록한 ID)
+  const requestedId = req.query.id ? parseInt(req.query.id) : null;
+
   res.writeHead(200, {
     'Content-Type': 'multipart/x-mixed-replace; boundary=frame',
     'Cache-Control': 'no-cache',
@@ -101,8 +107,10 @@ app.get('/stream.mjpg', (req, res) => {
 
   const viewer = {
     res,
-    id: ++viewerIdCounter,  // 고유 ID 보장
-    droppedFrames: 0
+    id: requestedId || ++viewerIdCounter,  // 요청된 ID가 있으면 사용
+    droppedFrames: 0,
+    sentFrames: 0,  // 전송 성공한 프레임
+    socketId: null  // 연결된 Socket.IO ID
   };
   viewers.push(viewer);
   console.log(`시청자 연결: ${viewers.length}명 (ID: ${viewer.id})`);
@@ -118,7 +126,6 @@ app.get('/stream.mjpg', (req, res) => {
 let lastFrameTime = 0;
 let frameCount = 0;
 let frameSequence = 0; // 전역 프레임 시퀀스 번호
-let totalDroppedFrames = 0; // 서버에서 drop된 총 프레임
 let serverStats = { fps: 0, latency: 0, frameSize: 0, lastCountTime: Date.now() };
 
 // 프레임 브로드캐스트 함수 (공통)
@@ -142,16 +149,15 @@ function broadcastFrame(frameBuffer, timestamp) {
     serverStats.lastCountTime = now;
   }
 
-  // 타임스탬프와 함께 시청자에게 브로드캐스트
-  io.emit('frame-stats', {
+  // 기본 stats (뷰어별 드랍 정보는 아래에서 개별 전송)
+  const baseStats = {
     seq: frameSequence,                   // 프레임 시퀀스 번호
     serverSendTime: Date.now(),           // 서버가 보내는 시각 (뷰어에서 RTT 계산용)
     broadcasterLatency: serverStats.latency, // 송출자→서버 레이턴시
     frameSize: serverStats.frameSize,
     fps: serverStats.fps,
-    totalDropped: totalDroppedFrames,     // 서버에서 drop된 총 프레임
     viewers: viewers.length               // 현재 시청자 수
-  });
+  };
 
   // 모든 시청자에게 프레임 전송 (MJPEG)
   const boundary = '--frame\r\n';
@@ -185,13 +191,30 @@ function broadcastFrame(frameBuffer, timestamp) {
           });
         }
         viewer.droppedFrames = (viewer.droppedFrames || 0) + 1;
-        totalDroppedFrames++; // 전역 drop 카운트 증가
+      } else {
+        viewer.sentFrames = (viewer.sentFrames || 0) + 1;
+      }
+
+      // 해당 뷰어의 Socket.IO로 개별 stats 전송
+      if (viewer.socketId) {
+        const socket = io.sockets.sockets.get(viewer.socketId);
+        if (socket) {
+          socket.emit('frame-stats', {
+            ...baseStats,
+            myDropped: viewer.droppedFrames,
+            mySent: viewer.sentFrames,
+            mySeq: viewer.sentFrames  // 이 뷰어가 실제로 받은 프레임 수
+          });
+        }
       }
     } catch (e) {
       console.log(`뷰어 ${viewer.id} 에러: ${e.message} - 제거`);
       viewers.splice(i, 1);
     }
   }
+
+  // Socket 연결 없는 뷰어들을 위한 broadcast (polling 모드 등)
+  io.emit('frame-stats-global', baseStats);
 }
 
 app.post('/frame', (req, res) => {
@@ -222,8 +245,25 @@ io.on('connection', (socket) => {
     io.emit('broadcaster-status', true);
   });
 
-  socket.on('viewer', () => {
+  socket.on('viewer', (data) => {
     socket.emit('broadcaster-status', broadcasterSocket !== null);
+
+    // 뷰어 ID 할당 및 반환
+    const viewerId = ++viewerIdCounter;
+    socket.viewerId = viewerId;
+    socketToViewer.set(socket.id, viewerId);
+    socket.emit('viewer-id', viewerId);
+    console.log(`뷰어 Socket 등록: ${socket.id} -> viewerId: ${viewerId}`);
+  });
+
+  // 뷰어가 MJPEG 스트림 연결 시 Socket과 매핑
+  socket.on('mjpeg-connected', (data) => {
+    const viewerId = data.viewerId || socket.viewerId;
+    const viewer = viewers.find(v => v.id === viewerId);
+    if (viewer) {
+      viewer.socketId = socket.id;
+      console.log(`MJPEG-Socket 매핑: viewerId ${viewerId} <-> socket ${socket.id}`);
+    }
   });
 
   // RTT 측정용 ping-pong
@@ -254,6 +294,13 @@ io.on('connection', (socket) => {
       latestFrame = null;
       io.emit('broadcaster-status', false);
       console.log('송출자 연결 해제');
+    }
+    // 뷰어 Socket 매핑 제거
+    socketToViewer.delete(socket.id);
+    // MJPEG 뷰어에서 socketId 제거
+    const viewer = viewers.find(v => v.socketId === socket.id);
+    if (viewer) {
+      viewer.socketId = null;
     }
   });
 });
