@@ -117,12 +117,15 @@ app.get('/stream.mjpg', (req, res) => {
 // 프레임 수신 (송출자 → 서버) - HTTP fallback
 let lastFrameTime = 0;
 let frameCount = 0;
+let frameSequence = 0; // 전역 프레임 시퀀스 번호
+let totalDroppedFrames = 0; // 서버에서 drop된 총 프레임
 let serverStats = { fps: 0, latency: 0, frameSize: 0, lastCountTime: Date.now() };
 
 // 프레임 브로드캐스트 함수 (공통)
 function broadcastFrame(frameBuffer, timestamp) {
   const serverReceiveTime = Date.now();
   latestFrame = frameBuffer;
+  frameSequence++; // 프레임 시퀀스 번호 증가
 
   // 레이턴시 계산 (송출자 → 서버)
   if (timestamp) {
@@ -141,10 +144,13 @@ function broadcastFrame(frameBuffer, timestamp) {
 
   // 타임스탬프와 함께 시청자에게 브로드캐스트
   io.emit('frame-stats', {
+    seq: frameSequence,                   // 프레임 시퀀스 번호
     serverSendTime: Date.now(),           // 서버가 보내는 시각 (뷰어에서 RTT 계산용)
     broadcasterLatency: serverStats.latency, // 송출자→서버 레이턴시
     frameSize: serverStats.frameSize,
-    fps: serverStats.fps
+    fps: serverStats.fps,
+    totalDropped: totalDroppedFrames,     // 서버에서 drop된 총 프레임
+    viewers: viewers.length               // 현재 시청자 수
   });
 
   // 모든 시청자에게 프레임 전송 (MJPEG)
@@ -179,6 +185,7 @@ function broadcastFrame(frameBuffer, timestamp) {
           });
         }
         viewer.droppedFrames = (viewer.droppedFrames || 0) + 1;
+        totalDroppedFrames++; // 전역 drop 카운트 증가
       }
     } catch (e) {
       console.log(`뷰어 ${viewer.id} 에러: ${e.message} - 제거`);

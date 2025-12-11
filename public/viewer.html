@@ -201,6 +201,8 @@
         <div class="stat-row"><span class="stat-label">E2E Latency</span><span class="stat-value" id="latency">-</span></div>
         <div class="stat-row"><span class="stat-label">Network RTT</span><span class="stat-value" id="rtt">-</span></div>
         <div class="stat-row"><span class="stat-label">Packet Loss</span><span class="stat-value" id="packetLoss">0%</span></div>
+        <div class="stat-row"><span class="stat-label">Frames Lost</span><span class="stat-value" id="framesLost">0</span></div>
+        <div class="stat-row"><span class="stat-label">Server Dropped</span><span class="stat-value" id="serverDropped">0</span></div>
         <div class="stat-row"><span class="stat-label">Frame Size</span><span class="stat-value" id="frameSize">-</span></div>
         <div class="stat-row"><span class="stat-label">Frames Received</span><span class="stat-value" id="framesReceived">-</span></div>
         <div class="stat-row"><span class="stat-label">Total Received</span><span class="stat-value" id="bytesReceived">-</span></div>
@@ -417,13 +419,8 @@
     let lastBitrateTime = Date.now();
     let currentBitrate = 0;
 
-    // Packet loss tracking
+    // FPS 비교용 (색상 표시)
     let expectedFps = 15; // 기본값, broadcaster에서 받아옴
-    let packetLossWindow = [];
-    const LOSS_WINDOW_SIZE = 5; // 5초 윈도우
-    let lastExpectedFrames = 0;
-    let lastReceivedFrames = 0;
-    let lossCheckInterval = null;
 
     // 상태에 따른 색상 업데이트 함수
     function updateStatusColor(elementId, value, thresholds) {
@@ -469,17 +466,38 @@
       chart.data.datasets[0].backgroundColor = color + '20';
     }
 
-    // 패킷 로스 계산용
-    let frameSequence = 0;
-    let lostFrames = 0;
-    let lastReportedFps = 0;
-    let fpsHistory = [];
+    // 패킷 로스 계산용 (시퀀스 기반)
+    let lastSeq = 0;
+    let totalLostFrames = 0;
+    let totalReceivedFrames = 0;
+    let lossHistory = [];
+    const LOSS_HISTORY_SIZE = 10; // 최근 10개 샘플 평균
 
     socket.on('frame-stats', (data) => {
       const now = Date.now();
       const interval = now - lastSocketTime;
       lastSocketTime = now;
       lastFrameTime = now; // 프레임 수신 시간 업데이트 (자동 재연결용)
+
+      // 시퀀스 기반 패킷 로스 계산
+      let lossRate = 0;
+      if (lastSeq > 0 && data.seq > lastSeq) {
+        const expected = data.seq - lastSeq;
+        const lost = expected - 1; // 현재 프레임 제외
+        if (lost > 0) {
+          totalLostFrames += lost;
+        }
+        totalReceivedFrames++;
+
+        // 이번 구간 로스율 (%)
+        const intervalLoss = expected > 0 ? (lost / expected) * 100 : 0;
+        lossHistory.push(intervalLoss);
+        if (lossHistory.length > LOSS_HISTORY_SIZE) lossHistory.shift();
+
+        // 최근 평균 로스율
+        lossRate = lossHistory.reduce((a, b) => a + b, 0) / lossHistory.length;
+      }
+      lastSeq = data.seq;
 
       // 정확한 레이턴시 계산:
       // 1. 송출자→서버 레이턴시 (broadcasterLatency): 서버에서 측정
@@ -502,14 +520,6 @@
         lastBitrateTime = now;
       }
 
-      // FPS 기록 및 패킷 로스 계산
-      fpsHistory.push(data.fps);
-      if (fpsHistory.length > 5) fpsHistory.shift();
-      const avgFps = fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length;
-
-      // 예상 FPS 대비 실제 FPS로 패킷 로스 추정
-      const lossRate = expectedFps > 0 ? Math.max(0, (1 - avgFps / expectedFps) * 100) : 0;
-
       // FPS 업데이트 및 색상
       const fpsEl = document.getElementById('fps');
       fpsEl.textContent = data.fps.toFixed(1) + ' fps';
@@ -528,6 +538,8 @@
       document.getElementById('frameSize').textContent = (data.frameSize / 1024).toFixed(1) + ' KB';
       document.getElementById('framesReceived').textContent = totalFrames.toLocaleString();
       document.getElementById('bytesReceived').textContent = formatBytes(totalBytes);
+      document.getElementById('framesLost').textContent = totalLostFrames.toLocaleString();
+      document.getElementById('serverDropped').textContent = (data.totalDropped || 0).toLocaleString();
 
       // labels도 함께 추가 (broadcast-stats가 없을 때 대비)
       if (statsData.labels.length < statsData.latency.length + 1) {

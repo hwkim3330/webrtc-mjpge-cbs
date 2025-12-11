@@ -1,6 +1,12 @@
 # MJPEG Stream + CBS Control
 <img width="1840" height="876" alt="image" src="https://github.com/user-attachments/assets/01de7e2d-5a1d-466f-8257-3ccea29f60a3" />
 
+[![Node.js](https://img.shields.io/badge/Node.js-16%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Socket.IO](https://img.shields.io/badge/Socket.IO-4.x-010101?logo=socket.io&logoColor=white)](https://socket.io/)
+[![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![TSN](https://img.shields.io/badge/TSN-IEEE%20802.1Qav-blue)](https://1.ieee802.org/tsn/)
+
 Real-time MJPEG webcam streaming server with integrated CBS (Credit Based Shaper) control for Microchip LAN969x TSN switches.
 
 ## Features
