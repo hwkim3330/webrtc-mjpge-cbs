@@ -5,10 +5,13 @@ Real-time MJPEG webcam streaming server with integrated CBS (Credit Based Shaper
 ## Features
 
 - **MJPEG Streaming**: Browser-based webcam capture and streaming
-- **Real-time Statistics**: Bitrate, FPS, Latency, Frame Size graphs
+- **Real-time Statistics**: 6 charts per page (Bitrate, FPS, Latency, Frame Size, RTT/Dropped, Loss/Viewers)
+- **Accurate Latency Measurement**: E2E Latency (broadcaster→viewer) + Network RTT (ping-pong)
 - **CBS Control**: GUI for configuring Credit Based Shaper on TSN switch ports
+- **Auto CBS Device Detection**: Automatically finds /dev/ttyACM0-2
 - **Low Latency Mode**: Frame dropping mechanism to prevent queue buildup
 - **Independent Viewer Streams**: Slow viewers don't block others
+- **Multi-browser Support**: Polling fallback for Safari/Mac compatibility
 - **Old Device Support**: Presets for legacy hardware (Old Mac, low-spec devices)
 
 ## Architecture
@@ -18,12 +21,12 @@ Real-time MJPEG webcam streaming server with integrated CBS (Credit Based Shaper
 │ Broadcaster │ ──── Binary ────→ │   Server    │ ───── Stream ────→ │   Viewer    │
 │  (Browser)  │     (no wait)      │  (Node.js)  │   (non-blocking)   │  (Browser)  │
 └─────────────┘                    └─────────────┘                    └─────────────┘
-      │                                  │
-      │ getUserMedia                     │ CBS CLI
-      │ Canvas → JPEG                    │ (mvdct.cli)
-      ▼                                  ▼
-   Webcam                          TSN Switch
-                                   (LAN969x)
+      │                                  │                                  │
+      │ getUserMedia                     │ CBS CLI                          │ RTT Ping
+      │ Canvas → JPEG                    │ (mvdct.cli)                      │ Pong
+      ▼                                  ▼                                  ▼
+   Webcam                          TSN Switch                         E2E Latency
+                                   (LAN969x)                          Measurement
 ```
 
 ## Requirements
@@ -55,10 +58,11 @@ npm start
 | Page | URL | Description |
 |------|-----|-------------|
 | Main | http://localhost:3000 | Landing page |
-| Broadcast | http://localhost:3000/broadcast | Webcam streaming + CBS control |
-| Watch | http://[IP]:3000/watch | Viewer page with stats |
+| Broadcast | http://localhost:3000/broadcast | Webcam streaming + CBS control (6 charts) |
+| Watch | http://[IP]:3000/watch | Viewer page with stats (6 charts) |
 | CBS Only | http://localhost:3000/cbs | CBS control only |
 | Direct Stream | http://[IP]:3000/stream.mjpg | Raw MJPEG stream |
+| Single Frame | http://[IP]:3000/frame.jpg | Single JPEG frame (polling fallback) |
 
 ## Streaming Presets
 
@@ -93,6 +97,40 @@ if (viewer.res.writableNeedDrain) {
 Uses Socket.IO for efficient binary frame transfer with volatile emit:
 ```javascript
 socket.volatile.emit('frame', { frame: buffer, timestamp });
+```
+
+### 4. RTT-based Latency Measurement
+Accurate E2E latency calculation using NTP-style clock synchronization:
+```javascript
+// Server ping-pong for RTT measurement
+socket.on('ping-measure', (data) => {
+  socket.emit('pong-measure', { clientTime: data.clientTime, serverTime: Date.now() });
+});
+
+// Client calculates E2E latency
+E2E Latency = broadcasterLatency + (RTT / 2)
+```
+
+### 5. Polling Fallback for Safari/Mac
+Automatic fallback to polling mode when MJPEG streaming fails:
+```javascript
+// If MJPEG fails 3 times or no frames for 5 seconds
+pollingMode = true;
+setInterval(() => {
+  img.src = '/frame.jpg?t=' + Date.now();
+}, 100);  // 10 FPS polling
+```
+
+### 6. Auto CBS Device Detection
+Automatically detects CBS device from /dev/ttyACM0, ACM1, or ACM2:
+```javascript
+function detectCbsDevice() {
+  const devices = ['/dev/ttyACM0', '/dev/ttyACM1', '/dev/ttyACM2'];
+  for (const dev of devices) {
+    if (fs.existsSync(dev)) return dev;
+  }
+  return null;
+}
 ```
 
 ## CBS Configuration
@@ -153,6 +191,7 @@ sudo usermod -aG dialout $USER
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/stream.mjpg` | MJPEG stream (multipart/x-mixed-replace) |
+| GET | `/frame.jpg` | Single JPEG frame (polling fallback) |
 | POST | `/frame` | Receive frame from broadcaster (HTTP fallback) |
 | GET | `/api/status` | Get streaming status (broadcasting, viewers count) |
 
@@ -210,6 +249,34 @@ curl http://localhost:3000/api/status
 | Binary transfer | 33% less overhead vs base64 |
 | `toBlob()` async | Non-blocking JPEG encoding |
 
+### Statistics Charts
+
+**Broadcaster (6 charts)**:
+| Chart | Description | Color |
+|-------|-------------|-------|
+| Bitrate | Sent data rate (Mbps) | Blue |
+| FPS | Frames per second | Green |
+| Encode Time | JPEG encoding time (ms) | Orange |
+| Frame Size | Compressed frame size (KB) | Purple |
+| Dropped Frames | Frames dropped due to backpressure | Red |
+| Viewers | Connected viewer count | Indigo |
+
+**Viewer (6 charts)**:
+| Chart | Description | Color |
+|-------|-------------|-------|
+| Bitrate | Received data rate (Mbps) | Blue |
+| FPS | Frames per second | Green |
+| E2E Latency | Total latency broadcaster→viewer (ms) | Orange |
+| Network RTT | Round-trip time to server (ms) | Purple |
+| Packet Loss | Frame loss percentage (%) | Red |
+| Frame Size | Received frame size (KB) | Indigo |
+
+### Latency Types Explained
+- **E2E Latency**: Total end-to-end delay from broadcaster capture to viewer display
+  - Formula: `broadcasterLatency + (RTT / 2)`
+- **Network RTT**: Round-trip time between viewer and server (ping-pong measurement)
+  - Used for calculating server→viewer portion of latency
+
 ## Troubleshooting
 
 ### High Latency (>1 second)
@@ -222,10 +289,21 @@ curl http://localhost:3000/api/status
 - Verify network connectivity
 - Check "Frames Dropped" counter
 
+### Viewer Shows "Waiting..." (Safari/Mac)
+- The system auto-detects and switches to polling mode after 3 failures
+- If stuck, manually refresh the page
+- Polling mode uses /frame.jpg endpoint (lower FPS but more compatible)
+
 ### CBS Not Working
 - Verify device connection: `ls -la /dev/ttyACM0`
+- Server auto-detects ACM0, ACM1, or ACM2
 - Check user permissions: `groups $USER`
 - Test CLI manually: `./mvdct.cli device /dev/ttyACM0 type`
+
+### Multiple Viewers - Only One Works
+- Each viewer gets unique ID via counter (not timestamp)
+- Check server logs for "시청자 연결" messages
+- Dead connections auto-cleanup on disconnect
 
 ## Performance Tips
 
