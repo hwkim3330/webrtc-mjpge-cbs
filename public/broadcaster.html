@@ -792,10 +792,20 @@
       document.getElementById('framesDropped').textContent = droppedFrames.toLocaleString();
       document.getElementById('bytesSent').textContent = formatBytes(stats.bytesSent);
 
-      fetch('/api/status').then(r => r.json()).then(d => {
-        document.getElementById('viewerCount').textContent = d.viewers;
-        lastViewerCount = d.viewers;
-      }).catch(() => {});
+      // UDP 모드면 UDP 뷰어 수, TCP 모드면 MJPEG 뷰어 수
+      if (udpMode) {
+        let udpCount = 0;
+        udpViewers.forEach((v) => {
+          if (v.dc && v.dc.readyState === 'open') udpCount++;
+        });
+        document.getElementById('viewerCount').textContent = udpCount;
+        lastViewerCount = udpCount;
+      } else {
+        fetch('/api/status').then(r => r.json()).then(d => {
+          document.getElementById('viewerCount').textContent = d.viewers;
+          lastViewerCount = d.viewers;
+        }).catch(() => {});
+      }
     }
 
     stopBtn.onclick = () => {
