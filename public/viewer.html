@@ -144,8 +144,14 @@
 </head>
 <body>
   <div class="header">
-    <h1>Viewer <span class="codec-badge">MJPEG</span></h1>
-    <a href="/" class="back-btn">Back</a>
+    <h1>Viewer <span class="codec-badge" id="modeBadge">MJPEG</span></h1>
+    <div style="display:flex; gap:10px; align-items:center;">
+      <select id="modeSelect" style="padding:6px 12px; border-radius:8px; border:1px solid #d2d2d7; font-size:0.85rem;">
+        <option value="tcp" selected>TCP (MJPEG)</option>
+        <option value="udp">UDP (WebRTC)</option>
+      </select>
+      <a href="/" class="back-btn">Back</a>
+    </div>
   </div>
 
   <div class="main-grid">
@@ -267,6 +273,63 @@
     let mjpegFailCount = 0;
     let streamStarted = false;
     let myViewerId = null;  // 서버에서 할당받은 뷰어 ID
+
+    // ========== UDP (WebRTC) Mode ==========
+    let udpMode = false;
+    let peerConnection = null;
+    let dataChannel = null;
+    let udpFrameSeq = 0;
+    let lastUdpSeq = 0;
+    let udpDropped = 0;
+    let udpReceived = 0;
+
+    const rtcConfig = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' }
+      ]
+    };
+
+    // 모드 변경 핸들러
+    document.getElementById('modeSelect').onchange = function() {
+      const mode = this.value;
+      if (mode === 'udp' && !udpMode) {
+        switchToUdpMode();
+      } else if (mode === 'tcp' && udpMode) {
+        switchToTcpMode();
+      }
+    };
+
+    function switchToUdpMode() {
+      udpMode = true;
+      document.getElementById('modeBadge').textContent = 'UDP';
+      document.getElementById('modeBadge').style.background = 'rgba(52,199,89,0.2)';
+      document.getElementById('modeBadge').style.color = '#34c759';
+
+      // TCP 스트림 중지
+      stopStream();
+
+      // UDP 뷰어 등록
+      socket.emit('udp-viewer-join');
+      statusEl.textContent = 'Connecting UDP...';
+      statusEl.className = 'status waiting';
+    }
+
+    function switchToTcpMode() {
+      udpMode = false;
+      document.getElementById('modeBadge').textContent = 'MJPEG';
+      document.getElementById('modeBadge').style.background = 'rgba(0,113,227,0.1)';
+      document.getElementById('modeBadge').style.color = '#0071e3';
+
+      // UDP 연결 종료
+      if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+        dataChannel = null;
+      }
+
+      // TCP 스트림 시작
+      startStream();
+    }
 
     socket.emit('viewer');
 
@@ -613,6 +676,154 @@
       if (b >= 1048576) return (b / 1048576).toFixed(2) + ' MB';
       if (b >= 1024) return (b / 1024).toFixed(2) + ' KB';
       return b + ' B';
+    }
+
+    // ========== WebRTC Signaling for UDP Mode ==========
+
+    socket.on('webrtc-offer', async (data) => {
+      if (!udpMode) return;
+      console.log('Received WebRTC offer from:', data.from);
+
+      peerConnection = new RTCPeerConnection(rtcConfig);
+
+      peerConnection.ondatachannel = (event) => {
+        dataChannel = event.channel;
+        dataChannel.binaryType = 'arraybuffer';
+
+        dataChannel.onopen = () => {
+          console.log('DataChannel open');
+          statusEl.textContent = 'Connected (UDP)';
+          statusEl.className = 'status connected';
+          streamImg.style.display = 'block';
+          noStreamEl.style.display = 'none';
+        };
+
+        dataChannel.onclose = () => {
+          console.log('DataChannel closed');
+          statusEl.textContent = 'Disconnected';
+          statusEl.className = 'status waiting';
+        };
+
+        dataChannel.onmessage = (event) => {
+          handleUdpFrame(event.data);
+        };
+      };
+
+      peerConnection.onicecandidate = (e) => {
+        if (e.candidate) {
+          socket.emit('webrtc-ice', { to: data.from, candidate: e.candidate });
+        }
+      };
+
+      peerConnection.onconnectionstatechange = () => {
+        console.log('Connection state:', peerConnection.connectionState);
+      };
+
+      await peerConnection.setRemoteDescription(data.offer);
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+      socket.emit('webrtc-answer', { to: data.from, answer: answer });
+    });
+
+    socket.on('webrtc-ice', async (data) => {
+      if (peerConnection && data.candidate) {
+        await peerConnection.addIceCandidate(data.candidate);
+      }
+    });
+
+    // UDP 프레임 수신 처리
+    let udpFpsCounter = 0;
+    let udpLastFpsTime = Date.now();
+    let udpCurrentFps = 0;
+    let udpBitrateBytes = 0;
+    let udpLastBitrateTime = Date.now();
+    let udpCurrentBitrate = 0;
+
+    function handleUdpFrame(data) {
+      const now = Date.now();
+      lastFrameTime = now;
+
+      // 헤더 파싱 (16바이트: seq(4) + timestamp(8) + size(4))
+      const view = new DataView(data);
+      const seq = view.getUint32(0, true);
+      const timestamp = view.getFloat64(4, true);
+      const size = view.getUint32(12, true);
+
+      // 프레임 드랍 감지 (시퀀스 갭)
+      if (lastUdpSeq > 0 && seq > lastUdpSeq + 1) {
+        const dropped = seq - lastUdpSeq - 1;
+        udpDropped += dropped;
+      }
+      lastUdpSeq = seq;
+      udpReceived++;
+
+      // JPEG 데이터 추출
+      const jpegData = new Uint8Array(data, 16);
+
+      // Blob URL로 이미지 표시
+      const blob = new Blob([jpegData], { type: 'image/jpeg' });
+      const url = URL.createObjectURL(blob);
+
+      // 이전 URL 해제
+      if (streamImg.src && streamImg.src.startsWith('blob:')) {
+        URL.revokeObjectURL(streamImg.src);
+      }
+      streamImg.src = url;
+
+      // 통계 계산
+      udpFpsCounter++;
+      udpBitrateBytes += jpegData.byteLength;
+      totalBytes += jpegData.byteLength;
+
+      // 1초마다 FPS/Bitrate 계산
+      const elapsed = (now - udpLastFpsTime) / 1000;
+      if (elapsed >= 1) {
+        udpCurrentFps = udpFpsCounter / elapsed;
+        udpFpsCounter = 0;
+        udpLastFpsTime = now;
+
+        udpCurrentBitrate = (udpBitrateBytes * 8) / elapsed / 1000000;
+        udpBitrateBytes = 0;
+
+        // UI 업데이트
+        document.getElementById('fps').textContent = udpCurrentFps.toFixed(1) + ' fps';
+        document.getElementById('bitrate').textContent = udpCurrentBitrate.toFixed(2) + ' Mbps';
+
+        statsData.fps.push(udpCurrentFps);
+        statsData.bitrate.push(udpCurrentBitrate);
+        if (statsData.fps.length > MAX_POINTS) {
+          statsData.fps.shift();
+          statsData.bitrate.shift();
+        }
+      }
+
+      // 레이턴시 계산
+      const latency = now - timestamp;
+      document.getElementById('latency').textContent = Math.round(latency) + ' ms';
+      updateStatusColor('latency', latency, { good: 50, warning: 100 });
+
+      statsData.latency.push(latency);
+      if (statsData.latency.length > MAX_POINTS) statsData.latency.shift();
+
+      // 드랍 표시
+      const lossRate = udpReceived > 0 ? (udpDropped / (udpReceived + udpDropped)) * 100 : 0;
+      document.getElementById('packetLoss').textContent = lossRate.toFixed(1) + '%';
+      document.getElementById('framesLost').textContent = udpDropped.toLocaleString();
+      document.getElementById('framesReceived').textContent = udpReceived.toLocaleString();
+      document.getElementById('frameSize').textContent = (jpegData.byteLength / 1024).toFixed(1) + ' KB';
+      document.getElementById('bytesReceived').textContent = formatBytes(totalBytes);
+
+      // labels 추가
+      if (statsData.labels.length < statsData.latency.length) {
+        statsData.labels.push('');
+      }
+
+      statsData.loss.push(udpDropped > 0 && seq - lastUdpSeq > 1 ? seq - lastUdpSeq - 1 : 0);
+      statsData.frameSize.push(jpegData.byteLength / 1024);
+      if (statsData.loss.length > MAX_POINTS) statsData.loss.shift();
+      if (statsData.frameSize.length > MAX_POINTS) statsData.frameSize.shift();
+
+      updateCharts();
     }
   </script>
 </body>

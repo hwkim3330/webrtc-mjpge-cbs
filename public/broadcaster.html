@@ -288,7 +288,15 @@
             <option value="0.5" selected>Lo</option>
             <option value="0.3">VLo</option>
           </select>
+          <label>Mode</label>
+          <select id="modeSelect">
+            <option value="tcp" selected>TCP (MJPEG)</option>
+            <option value="udp">UDP (WebRTC)</option>
+          </select>
         </div>
+      </div>
+      <div id="udpStatus" style="margin-top:10px; font-size:0.8rem; color:#86868b; display:none;">
+        <span>UDP Viewers: <strong id="udpViewerCount">0</strong></span>
       </div>
     </div>
 
@@ -402,6 +410,16 @@
     let streaming = false;
     let frameInterval = null;
 
+    // ========== UDP (WebRTC) Mode ==========
+    const udpViewers = new Map(); // viewerId -> { pc, dc }
+    let udpMode = false;
+
+    const rtcConfig = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' }
+      ]
+    };
+
     const MAX_POINTS = 60;
     const statsData = { bitrate: [], fps: [], latency: [], frameSize: [], dropped: [], viewers: [], labels: [] };
     let stats = { framesSent: 0, bytesSent: 0, lastTime: Date.now(), lastBytes: 0, lastFrames: 0, lastFrameSize: 0, lastLatency: 0 };
@@ -477,9 +495,15 @@
 
     function startStreaming() {
       streaming = true;
+      udpMode = document.getElementById('modeSelect').value === 'udp';
       const fps = parseInt(document.getElementById('fpsSelect').value);
       const quality = parseFloat(document.getElementById('qualitySelect').value);
       const frameIntervalMs = 1000 / fps;
+
+      if (udpMode) {
+        document.getElementById('udpStatus').style.display = 'block';
+        statusEl.textContent = 'LIVE (UDP)';
+      }
 
       // 단순 setInterval 사용 (더 안정적)
       frameInterval = setInterval(() => {
@@ -491,6 +515,13 @@
 
     // 프레임 드롭 방식 - 이전 전송 완료 전 새 프레임 무시
     function sendFrame(quality) {
+      // UDP 모드: DataChannel로 전송 (재전송 없음)
+      if (udpMode) {
+        sendFrameUDP(quality);
+        return;
+      }
+
+      // TCP 모드: 기존 Socket.IO 방식
       // 이전 프레임 전송 중이면 스킵 (큐 누적 방지!)
       if (isSending) {
         droppedFrames++;
@@ -527,6 +558,143 @@
         });
       }, 'image/jpeg', quality);
     }
+
+    // ========== UDP (WebRTC DataChannel) 전송 ==========
+    let udpFrameSeq = 0;
+
+    function sendFrameUDP(quality) {
+      const sendTime = Date.now();
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      canvas.toBlob((blob) => {
+        if (!blob || !streaming) return;
+
+        blob.arrayBuffer().then((buffer) => {
+          udpFrameSeq++;
+          const header = new ArrayBuffer(16);
+          const view = new DataView(header);
+          view.setUint32(0, udpFrameSeq, true);      // 시퀀스 번호
+          view.setFloat64(4, sendTime, true);        // 타임스탬프
+          view.setUint32(12, buffer.byteLength, true); // 데이터 크기
+
+          // 헤더 + JPEG 데이터
+          const packet = new Uint8Array(header.byteLength + buffer.byteLength);
+          packet.set(new Uint8Array(header), 0);
+          packet.set(new Uint8Array(buffer), header.byteLength);
+
+          // 모든 UDP 뷰어에게 전송 (unreliable - 재전송 없음)
+          let sentCount = 0;
+          udpViewers.forEach((viewer, viewerId) => {
+            if (viewer.dc && viewer.dc.readyState === 'open') {
+              try {
+                // bufferedAmount 체크 - 버퍼 가득 차면 드랍
+                if (viewer.dc.bufferedAmount < 1024 * 1024) { // 1MB 미만이면 전송
+                  viewer.dc.send(packet);
+                  sentCount++;
+                } else {
+                  droppedFrames++;
+                }
+              } catch (e) {
+                console.log('UDP send error:', e);
+              }
+            }
+          });
+
+          if (sentCount > 0) {
+            stats.framesSent++;
+            stats.bytesSent += blob.size * sentCount;
+            stats.lastFrameSize = blob.size;
+            stats.lastLatency = Date.now() - sendTime;
+          }
+        });
+      }, 'image/jpeg', quality);
+    }
+
+    // WebRTC 연결 생성 (새 UDP 뷰어 참가 시)
+    async function createPeerConnection(viewerId) {
+      console.log('Creating PeerConnection for:', viewerId);
+
+      const pc = new RTCPeerConnection(rtcConfig);
+
+      // DataChannel 생성 (unreliable = UDP-like)
+      const dc = pc.createDataChannel('frames', {
+        ordered: false,      // 순서 보장 안 함
+        maxRetransmits: 0    // 재전송 없음 = UDP
+      });
+
+      dc.binaryType = 'arraybuffer';
+      dc.onopen = () => {
+        console.log('DataChannel open:', viewerId);
+        updateUdpViewerCount();
+      };
+      dc.onclose = () => {
+        console.log('DataChannel closed:', viewerId);
+        udpViewers.delete(viewerId);
+        updateUdpViewerCount();
+      };
+      dc.onerror = (e) => console.log('DataChannel error:', e);
+
+      udpViewers.set(viewerId, { pc, dc });
+
+      // ICE candidate 전송
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          socket.emit('webrtc-ice', { to: viewerId, candidate: e.candidate });
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        console.log('Connection state:', pc.connectionState);
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          udpViewers.delete(viewerId);
+          updateUdpViewerCount();
+        }
+      };
+
+      // Offer 생성 및 전송
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('webrtc-offer', { to: viewerId, offer: offer });
+    }
+
+    function updateUdpViewerCount() {
+      let count = 0;
+      udpViewers.forEach((v) => {
+        if (v.dc && v.dc.readyState === 'open') count++;
+      });
+      document.getElementById('udpViewerCount').textContent = count;
+    }
+
+    // WebRTC 시그널링 이벤트
+    socket.on('udp-viewer-joined', async (data) => {
+      console.log('UDP viewer joined:', data.viewerId);
+      await createPeerConnection(data.viewerId);
+    });
+
+    socket.on('udp-viewer-left', (data) => {
+      console.log('UDP viewer left:', data.viewerId);
+      const viewer = udpViewers.get(data.viewerId);
+      if (viewer) {
+        viewer.pc.close();
+        udpViewers.delete(data.viewerId);
+        updateUdpViewerCount();
+      }
+    });
+
+    socket.on('webrtc-answer', async (data) => {
+      console.log('Received answer from:', data.from);
+      const viewer = udpViewers.get(data.from);
+      if (viewer) {
+        await viewer.pc.setRemoteDescription(data.answer);
+      }
+    });
+
+    socket.on('webrtc-ice', async (data) => {
+      const viewer = udpViewers.get(data.from);
+      if (viewer && data.candidate) {
+        await viewer.pc.addIceCandidate(data.candidate);
+      }
+    });
 
     function updateStats() {
       const now = Date.now();

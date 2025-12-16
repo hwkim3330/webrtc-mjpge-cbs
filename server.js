@@ -288,12 +288,56 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('broadcast-stats', data);
   });
 
+  // ============================================
+  // WebRTC Signaling for UDP Mode
+  // ============================================
+
+  // UDP 모드 뷰어 목록
+  socket.on('udp-viewer-join', () => {
+    socket.udpViewer = true;
+    console.log(`UDP 뷰어 참가: ${socket.id}`);
+    // broadcaster에게 알림
+    if (broadcasterSocket) {
+      io.to(broadcasterSocket).emit('udp-viewer-joined', { viewerId: socket.id });
+    }
+  });
+
+  // WebRTC Offer (Broadcaster → Viewer)
+  socket.on('webrtc-offer', (data) => {
+    console.log(`WebRTC Offer: ${socket.id} -> ${data.to}`);
+    io.to(data.to).emit('webrtc-offer', {
+      from: socket.id,
+      offer: data.offer
+    });
+  });
+
+  // WebRTC Answer (Viewer → Broadcaster)
+  socket.on('webrtc-answer', (data) => {
+    console.log(`WebRTC Answer: ${socket.id} -> ${data.to}`);
+    io.to(data.to).emit('webrtc-answer', {
+      from: socket.id,
+      answer: data.answer
+    });
+  });
+
+  // ICE Candidate 교환
+  socket.on('webrtc-ice', (data) => {
+    io.to(data.to).emit('webrtc-ice', {
+      from: socket.id,
+      candidate: data.candidate
+    });
+  });
+
   socket.on('disconnect', () => {
     if (socket.id === broadcasterSocket) {
       broadcasterSocket = null;
       latestFrame = null;
       io.emit('broadcaster-status', false);
       console.log('송출자 연결 해제');
+    }
+    // UDP 뷰어 연결 해제 알림
+    if (socket.udpViewer && broadcasterSocket) {
+      io.to(broadcasterSocket).emit('udp-viewer-left', { viewerId: socket.id });
     }
     // 뷰어 Socket 매핑 제거
     socketToViewer.delete(socket.id);
