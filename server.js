@@ -108,9 +108,11 @@ app.get('/stream.mjpg', (req, res) => {
   const viewer = {
     res,
     id: requestedId || ++viewerIdCounter,  // 요청된 ID가 있으면 사용
-    droppedFrames: 0,
-    sentFrames: 0,  // 전송 성공한 프레임
-    socketId: null  // 연결된 Socket.IO ID
+    droppedFrames: 0,      // 이 뷰어가 드랍한 프레임 수
+    sentFrames: 0,         // 전송 성공한 프레임
+    lastSeqSent: 0,        // 마지막으로 전송한 시퀀스
+    socketId: null,        // 연결된 Socket.IO ID
+    backpressure: false    // 백프레셔 상태
   };
   viewers.push(viewer);
   console.log(`시청자 연결: ${viewers.length}명 (ID: ${viewer.id})`);
@@ -123,7 +125,6 @@ app.get('/stream.mjpg', (req, res) => {
 });
 
 // 프레임 수신 (송출자 → 서버) - HTTP fallback
-let lastFrameTime = 0;
 let frameCount = 0;
 let frameSequence = 0; // 전역 프레임 시퀀스 번호
 let serverStats = { fps: 0, latency: 0, frameSize: 0, lastCountTime: Date.now() };
@@ -135,9 +136,12 @@ function broadcastFrame(frameBuffer, timestamp) {
   frameSequence++; // 프레임 시퀀스 번호 증가
 
   // 레이턴시 계산 (송출자 → 서버)
-  if (timestamp) {
-    serverStats.latency = serverReceiveTime - timestamp;
+  // timestamp가 미래면 시계가 안 맞는 것 - 0으로 처리
+  let broadcasterLatency = 0;
+  if (timestamp && timestamp <= serverReceiveTime) {
+    broadcasterLatency = serverReceiveTime - timestamp;
   }
+  serverStats.latency = broadcasterLatency;
   serverStats.frameSize = latestFrame.length;
   frameCount++;
 
@@ -149,14 +153,14 @@ function broadcastFrame(frameBuffer, timestamp) {
     serverStats.lastCountTime = now;
   }
 
-  // 기본 stats (뷰어별 드랍 정보는 아래에서 개별 전송)
+  // 기본 stats
   const baseStats = {
-    seq: frameSequence,                   // 프레임 시퀀스 번호
-    serverSendTime: Date.now(),           // 서버가 보내는 시각 (뷰어에서 RTT 계산용)
-    broadcasterLatency: serverStats.latency, // 송출자→서버 레이턴시
+    seq: frameSequence,
+    serverSendTime: now,
+    broadcasterLatency: serverStats.latency,
     frameSize: serverStats.frameSize,
     fps: serverStats.fps,
-    viewers: viewers.length               // 현재 시청자 수
+    viewers: viewers.length
   };
 
   // 모든 시청자에게 프레임 전송 (MJPEG)
@@ -175,46 +179,57 @@ function broadcastFrame(frameBuffer, timestamp) {
     try {
       // 연결이 끊겼는지 확인
       if (!viewer.res || viewer.res.destroyed || viewer.res.writableEnded) {
-        console.log(`뷰어 ${viewer.id} 연결 끊김 - 제거`);
         viewers.splice(i, 1);
         continue;
       }
 
-      // 동기적으로 write (MJPEG는 순차 전송 필요)
-      const canWrite = viewer.res.write(frameData);
-      if (!canWrite) {
-        // 버퍼가 차면 drain 이벤트 대기 (한번만 등록)
-        if (!viewer.drainRegistered) {
-          viewer.drainRegistered = true;
-          viewer.res.once('drain', () => {
-            viewer.drainRegistered = false;
-          });
-        }
-        viewer.droppedFrames = (viewer.droppedFrames || 0) + 1;
-      } else {
-        viewer.sentFrames = (viewer.sentFrames || 0) + 1;
+      // 백프레셔 상태면 이 프레임 스킵
+      if (viewer.backpressure) {
+        viewer.droppedFrames++;
+        sendStatsToViewer(viewer, baseStats);
+        continue;
       }
 
-      // 해당 뷰어의 Socket.IO로 개별 stats 전송
-      if (viewer.socketId) {
-        const socket = io.sockets.sockets.get(viewer.socketId);
-        if (socket) {
-          socket.emit('frame-stats', {
-            ...baseStats,
-            myDropped: viewer.droppedFrames,
-            mySent: viewer.sentFrames,
-            mySeq: viewer.sentFrames  // 이 뷰어가 실제로 받은 프레임 수
-          });
-        }
+      // 프레임 전송 시도
+      const canWrite = viewer.res.write(frameData);
+
+      if (!canWrite) {
+        // 버퍼 가득 참 - 백프레셔 상태로 전환
+        viewer.backpressure = true;
+        viewer.res.once('drain', () => {
+          viewer.backpressure = false;
+        });
+        // 이 프레임은 전송됨 (버퍼에 들어감)
+        viewer.sentFrames++;
+        viewer.lastSeqSent = frameSequence;
+      } else {
+        viewer.sentFrames++;
+        viewer.lastSeqSent = frameSequence;
       }
+
+      sendStatsToViewer(viewer, baseStats);
     } catch (e) {
-      console.log(`뷰어 ${viewer.id} 에러: ${e.message} - 제거`);
       viewers.splice(i, 1);
     }
   }
 
   // Socket 연결 없는 뷰어들을 위한 broadcast (polling 모드 등)
   io.emit('frame-stats-global', baseStats);
+}
+
+// 뷰어에게 개별 stats 전송
+function sendStatsToViewer(viewer, baseStats) {
+  if (viewer.socketId) {
+    const socket = io.sockets.sockets.get(viewer.socketId);
+    if (socket) {
+      socket.emit('frame-stats', {
+        ...baseStats,
+        myDropped: viewer.droppedFrames,
+        mySent: viewer.sentFrames,
+        mySeq: viewer.lastSeqSent
+      });
+    }
+  }
 }
 
 app.post('/frame', (req, res) => {
@@ -234,19 +249,39 @@ app.post('/frame', (req, res) => {
 
 // Socket.io - 통계 및 상태 전송용
 let broadcasterSocket = null;
-let frameStats = { fps: 0, frameCount: 0, lastTime: Date.now(), bitrate: 0, totalBytes: 0 };
+let broadcasterMode = 'tcp'; // 'tcp' or 'udp' - 전역 변수
 
 io.on('connection', (socket) => {
   console.log(`클라이언트 연결: ${socket.id}`);
 
-  socket.on('broadcaster', () => {
+  socket.on('broadcaster', (data) => {
     broadcasterSocket = socket.id;
-    console.log('송출자 등록');
-    io.emit('broadcaster-status', true);
+    broadcasterMode = data?.mode || 'tcp';
+    console.log('송출자 등록, 모드:', broadcasterMode);
+    io.emit('broadcaster-status', { online: true, mode: broadcasterMode });
+  });
+
+  socket.on('broadcaster-mode', (mode) => {
+    broadcasterMode = mode;
+    console.log('송출자 모드 변경:', mode);
+    io.emit('broadcaster-status', { online: true, mode: broadcasterMode });
+
+    // UDP 모드로 변경 시, 대기 중인 UDP 뷰어들에게 알림
+    if (mode === 'udp' && broadcasterSocket) {
+      io.sockets.sockets.forEach((s) => {
+        if (s.udpViewer && s.id !== broadcasterSocket) {
+          console.log('Notifying UDP viewer:', s.id);
+          io.to(broadcasterSocket).emit('udp-viewer-joined', { viewerId: s.id });
+        }
+      });
+    }
   });
 
   socket.on('viewer', (data) => {
-    socket.emit('broadcaster-status', broadcasterSocket !== null);
+    socket.emit('broadcaster-status', {
+      online: broadcasterSocket !== null,
+      mode: broadcasterMode
+    });
 
     // 뷰어 ID 할당 및 반환
     const viewerId = ++viewerIdCounter;
@@ -332,7 +367,8 @@ io.on('connection', (socket) => {
     if (socket.id === broadcasterSocket) {
       broadcasterSocket = null;
       latestFrame = null;
-      io.emit('broadcaster-status', false);
+      broadcasterMode = 'tcp';
+      io.emit('broadcaster-status', { online: false, mode: 'tcp' });
       console.log('송출자 연결 해제');
     }
     // UDP 뷰어 연결 해제 알림

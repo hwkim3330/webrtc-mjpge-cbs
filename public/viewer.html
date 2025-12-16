@@ -308,10 +308,23 @@
       // TCP 스트림 중지
       stopStream();
 
+      // 기존 연결 정리
+      if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+        dataChannel = null;
+      }
+
+      // UDP 관련 변수 리셋
+      lastUdpSeq = 0;
+      udpDropped = 0;
+      udpReceived = 0;
+
       // UDP 뷰어 등록
       socket.emit('udp-viewer-join');
       statusEl.textContent = 'Connecting UDP...';
       statusEl.className = 'status waiting';
+      console.log('Switched to UDP mode, waiting for offer...');
     }
 
     function switchToTcpMode() {
@@ -386,11 +399,27 @@
     setInterval(measureRtt, 1000);
     measureRtt(); // 초기 측정
 
-    socket.on('broadcaster-status', (broadcasting) => {
-      console.log('broadcaster-status:', broadcasting);
-      if (broadcasting) {
-        // 스트림 시작
-        startStream();
+    let broadcasterOnline = false;
+    let broadcasterMode = 'tcp';
+
+    socket.on('broadcaster-status', (status) => {
+      console.log('broadcaster-status:', status);
+      // 이전 버전 호환 (boolean)
+      if (typeof status === 'boolean') {
+        broadcasterOnline = status;
+      } else {
+        broadcasterOnline = status.online;
+        broadcasterMode = status.mode || 'tcp';
+      }
+
+      if (broadcasterOnline) {
+        // broadcaster가 UDP 모드면 viewer도 자동 UDP 전환 제안
+        if (broadcasterMode === 'udp' && !udpMode) {
+          document.getElementById('modeSelect').value = 'udp';
+          switchToUdpMode();
+        } else if (!udpMode) {
+          startStream();
+        }
       } else {
         stopStream();
       }
@@ -580,9 +609,22 @@
 
       // 정확한 레이턴시 계산:
       // 1. 송출자→서버 레이턴시 (broadcasterLatency): 서버에서 측정
-      // 2. 서버→뷰어 레이턴시: (now - serverSendTime) 또는 RTT/2로 추정
-      const serverToViewerLatency = serverRtt > 0 ? Math.round(serverRtt / 2) : 0;
-      const totalLatency = data.broadcasterLatency + serverToViewerLatency;
+      // 2. 서버→뷰어 레이턴시: 실제 측정 (now - serverSendTime) + 시계 보정
+      // serverSendTime은 서버 시계 기준이므로 clockOffset으로 보정
+      let serverToViewerLatency = now - data.serverSendTime - clockOffset;
+
+      // 음수이거나 비정상적으로 크면 RTT/2로 대체
+      if (serverToViewerLatency < 0 || serverToViewerLatency > 2000) {
+        serverToViewerLatency = serverRtt > 0 ? Math.round(serverRtt / 2) : 0;
+      }
+
+      // E2E = broadcaster→server + server→viewer
+      // 최소값은 RTT/2 (서버 경유하므로)
+      let totalLatency = data.broadcasterLatency + serverToViewerLatency;
+      const minLatency = Math.round(serverRtt / 2);
+      if (totalLatency < minLatency) {
+        totalLatency = minLatency;
+      }
 
       totalFrames++;
       totalBytes += data.frameSize;
@@ -681,48 +723,83 @@
     // ========== WebRTC Signaling for UDP Mode ==========
 
     socket.on('webrtc-offer', async (data) => {
-      if (!udpMode) return;
+      if (!udpMode) {
+        console.log('Ignoring offer - not in UDP mode');
+        return;
+      }
       console.log('Received WebRTC offer from:', data.from);
 
-      peerConnection = new RTCPeerConnection(rtcConfig);
-
-      peerConnection.ondatachannel = (event) => {
-        dataChannel = event.channel;
-        dataChannel.binaryType = 'arraybuffer';
-
-        dataChannel.onopen = () => {
-          console.log('DataChannel open');
-          statusEl.textContent = 'Connected (UDP)';
-          statusEl.className = 'status connected';
-          streamImg.style.display = 'block';
-          noStreamEl.style.display = 'none';
-        };
-
-        dataChannel.onclose = () => {
-          console.log('DataChannel closed');
-          statusEl.textContent = 'Disconnected';
-          statusEl.className = 'status waiting';
-        };
-
-        dataChannel.onmessage = (event) => {
-          handleUdpFrame(event.data);
-        };
-      };
-
-      peerConnection.onicecandidate = (e) => {
-        if (e.candidate) {
-          socket.emit('webrtc-ice', { to: data.from, candidate: e.candidate });
+      try {
+        // 기존 연결 정리
+        if (peerConnection) {
+          peerConnection.close();
         }
-      };
 
-      peerConnection.onconnectionstatechange = () => {
-        console.log('Connection state:', peerConnection.connectionState);
-      };
+        peerConnection = new RTCPeerConnection(rtcConfig);
 
-      await peerConnection.setRemoteDescription(data.offer);
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      socket.emit('webrtc-answer', { to: data.from, answer: answer });
+        peerConnection.ondatachannel = (event) => {
+          console.log('DataChannel received:', event.channel.label);
+          dataChannel = event.channel;
+          dataChannel.binaryType = 'arraybuffer';
+
+          dataChannel.onopen = () => {
+            console.log('DataChannel open - ready to receive frames');
+            statusEl.textContent = 'Connected (UDP)';
+            statusEl.className = 'status connected';
+            streamImg.style.display = 'block';
+            noStreamEl.style.display = 'none';
+          };
+
+          dataChannel.onclose = () => {
+            console.log('DataChannel closed');
+            statusEl.textContent = 'Disconnected';
+            statusEl.className = 'status waiting';
+          };
+
+          dataChannel.onerror = (e) => {
+            console.error('DataChannel error:', e);
+          };
+
+          dataChannel.onmessage = (event) => {
+            handleUdpFrame(event.data);
+          };
+        };
+
+        peerConnection.onicecandidate = (e) => {
+          if (e.candidate) {
+            console.log('Sending ICE candidate');
+            socket.emit('webrtc-ice', { to: data.from, candidate: e.candidate });
+          }
+        };
+
+        peerConnection.oniceconnectionstatechange = () => {
+          console.log('ICE connection state:', peerConnection.iceConnectionState);
+          if (peerConnection.iceConnectionState === 'connected') {
+            console.log('ICE connected!');
+          } else if (peerConnection.iceConnectionState === 'failed') {
+            console.error('ICE connection failed');
+            statusEl.textContent = 'Connection failed';
+            statusEl.className = 'status waiting';
+          }
+        };
+
+        peerConnection.onconnectionstatechange = () => {
+          console.log('Connection state:', peerConnection.connectionState);
+        };
+
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+        console.log('Remote description set');
+
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        console.log('Local description set, sending answer');
+
+        socket.emit('webrtc-answer', { to: data.from, answer: answer });
+      } catch (e) {
+        console.error('WebRTC offer handling error:', e);
+        statusEl.textContent = 'Connection error';
+        statusEl.className = 'status waiting';
+      }
     });
 
     socket.on('webrtc-ice', async (data) => {
@@ -738,6 +815,7 @@
     let udpBitrateBytes = 0;
     let udpLastBitrateTime = Date.now();
     let udpCurrentBitrate = 0;
+    let lastUdpDropped = 0;
 
     function handleUdpFrame(data) {
       const now = Date.now();
@@ -750,9 +828,10 @@
       const size = view.getUint32(12, true);
 
       // 프레임 드랍 감지 (시퀀스 갭)
+      let droppedThisFrame = 0;
       if (lastUdpSeq > 0 && seq > lastUdpSeq + 1) {
-        const dropped = seq - lastUdpSeq - 1;
-        udpDropped += dropped;
+        droppedThisFrame = seq - lastUdpSeq - 1;
+        udpDropped += droppedThisFrame;
       }
       lastUdpSeq = seq;
       udpReceived++;
@@ -795,10 +874,30 @@
           statsData.fps.shift();
           statsData.bitrate.shift();
         }
+
+        // 이 구간 드랍 수 계산
+        const droppedThisCycle = udpDropped - lastUdpDropped;
+        lastUdpDropped = udpDropped;
+        statsData.loss.push(droppedThisCycle);
+        if (statsData.loss.length > MAX_POINTS) statsData.loss.shift();
       }
 
-      // 레이턴시 계산
-      const latency = now - timestamp;
+      // 레이턴시 계산 - 시계 동기화 보정 적용
+      // clockOffset = serverTime - clientTime - (RTT/2)
+      // 보정된 레이턴시 = now - timestamp - clockOffset
+      // 단, UDP는 P2P라 서버를 안 거치므로 직접 비교
+      // 하지만 broadcaster와 viewer 시계가 다를 수 있음
+      // RTT/2를 기준으로 추정 (같은 네트워크라면 비슷)
+      let latency = now - timestamp;
+
+      // 시계 차이로 인한 음수 또는 비정상 값 보정
+      // 시계가 맞다면 latency는 네트워크 RTT의 절반 정도 + 처리시간
+      // 음수이거나 너무 크면 RTT/2로 대체
+      if (latency < 0 || latency > 5000) {
+        // 시계가 안 맞음 - RTT 기반으로 추정
+        latency = serverRtt > 0 ? Math.round(serverRtt / 2) : 0;
+      }
+
       document.getElementById('latency').textContent = Math.round(latency) + ' ms';
       updateStatusColor('latency', latency, { good: 50, warning: 100 });
 
@@ -818,9 +917,7 @@
         statsData.labels.push('');
       }
 
-      statsData.loss.push(udpDropped > 0 && seq - lastUdpSeq > 1 ? seq - lastUdpSeq - 1 : 0);
       statsData.frameSize.push(jpegData.byteLength / 1024);
-      if (statsData.loss.length > MAX_POINTS) statsData.loss.shift();
       if (statsData.frameSize.length > MAX_POINTS) statsData.frameSize.shift();
 
       updateCharts();
